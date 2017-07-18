@@ -69,6 +69,7 @@ public class ImsVideoCallProviderWrapper extends Connection.VideoProvider {
             new ConcurrentHashMap<ImsVideoProviderWrapperCallback, Boolean>(8, 0.9f, 1));
     private VideoPauseTracker mVideoPauseTracker = new VideoPauseTracker();
     private boolean mUseVideoPauseWorkaround = false;
+    private int mCurrentVideoState;
 
     private IBinder.DeathRecipient mDeathRecipient = new IBinder.DeathRecipient() {
         @Override
@@ -283,6 +284,16 @@ public class ImsVideoCallProviderWrapper extends Connection.VideoProvider {
         }
 
         try {
+            if (isResumeRequest(fromProfile.getVideoState(), toProfile.getVideoState()) &&
+                    !VideoProfile.isPaused(mCurrentVideoState)) {
+                // Request is to resume, but we're already resumed so ignore the request.
+                Log.i(this, "onSendSessionModifyRequest: fromVideoState=%s, toVideoState=%s; "
+                                + "skipping resume request - already resumed.",
+                        VideoProfile.videoStateToString(fromProfile.getVideoState()),
+                        VideoProfile.videoStateToString(toProfile.getVideoState()));
+                return;
+            }
+
             toProfile = maybeFilterPauseResume(fromProfile, toProfile,
                     VideoPauseTracker.SOURCE_INCALL);
 
@@ -541,10 +552,18 @@ public class ImsVideoCallProviderWrapper extends Connection.VideoProvider {
      * @param newVideoState The new video state.
      */
     public void onVideoStateChanged(int newVideoState) {
-        if (mVideoPauseTracker.isPaused() && !VideoProfile.isPaused(newVideoState)) {
-            Log.i(this, "onVideoStateChanged: newVideoState=%s, clearing pending pause requests.",
+        if (VideoProfile.isPaused(mCurrentVideoState) && !VideoProfile.isPaused(newVideoState)) {
+            // New video state is un-paused, so clear any pending pause requests.
+            Log.i(this, "onVideoStateChanged: currentVideoState=%s, newVideoState=%s, "
+                            + "clearing pending pause requests.",
+                    VideoProfile.videoStateToString(mCurrentVideoState),
                     VideoProfile.videoStateToString(newVideoState));
             mVideoPauseTracker.clearPauseRequests();
+        } else {
+            Log.d(this, "onVideoStateChanged: currentVideoState=%s, newVideoState=%s",
+                    VideoProfile.videoStateToString(mCurrentVideoState),
+                    VideoProfile.videoStateToString(newVideoState));
         }
+        mCurrentVideoState = newVideoState;
     }
 }
