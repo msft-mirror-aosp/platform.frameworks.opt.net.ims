@@ -37,8 +37,6 @@ import android.telephony.Rlog;
 import android.telephony.ServiceState;
 import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyManager;
-import android.telephony.ims.ImsServiceProxy;
-import android.telephony.ims.ImsServiceProxyCompat;
 import android.telephony.ims.feature.ImsFeature;
 import android.util.Log;
 
@@ -183,7 +181,7 @@ public class ImsManager {
     private CarrierConfigManager mConfigManager;
     private int mPhoneId;
     private final boolean mConfigDynamicBind;
-    private ImsServiceProxyCompat mImsServiceProxy = null;
+    private ImsServiceProxy mImsServiceProxy = null;
     private ImsServiceDeathRecipient mDeathRecipient = new ImsServiceDeathRecipient();
     // Ut interface for the supplementary service configuration
     private ImsUt mUt = null;
@@ -1359,6 +1357,14 @@ public class ImsManager {
         connectIfServiceIsAvailable();
         // mImsServiceProxy will always create an ImsServiceProxy.
         return mImsServiceProxy.isBinderAlive();
+    }
+
+    /*
+     * Returns a flag indicating whether the IMS service is ready to send requests to lower layers.
+     */
+    public boolean isServiceReady() {
+        connectIfServiceIsAvailable();
+        return mImsServiceProxy.isBinderReady();
     }
 
     /**
