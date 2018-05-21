@@ -36,10 +36,15 @@ import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import android.telephony.ServiceState;
+import android.telephony.ims.ImsCallProfile;
+import android.telephony.ims.ImsConferenceState;
+import android.telephony.ims.ImsReasonInfo;
+import android.telephony.ims.ImsStreamMediaProfile;
+import android.telephony.ims.ImsSuppServiceNotification;
 import android.util.Log;
 
 import com.android.ims.internal.ICall;
-import com.android.ims.internal.ImsCallSession;
+import android.telephony.ims.ImsCallSession;
 import com.android.ims.internal.ImsStreamMediaSession;
 import com.android.internal.annotations.VisibleForTesting;
 
@@ -600,6 +605,12 @@ public class ImsCall implements ICall {
     private int mOverrideReason = ImsReasonInfo.CODE_UNSPECIFIED;
 
     /**
+     * When true, if this call is incoming, it will be answered with an
+     * {@link ImsStreamMediaProfile} that has RTT enabled.
+     */
+    private boolean mAnswerWithRtt = false;
+
+    /**
      * Create an IMS call object.
      *
      * @param context the context for accessing system services
@@ -1130,6 +1141,11 @@ public class ImsCall implements ICall {
     public void accept(int callType, ImsStreamMediaProfile profile) throws ImsException {
         logi("accept :: callType=" + callType + ", profile=" + profile);
 
+        if (mAnswerWithRtt) {
+            profile.mRttMode = ImsStreamMediaProfile.RTT_MODE_FULL;
+            logi("accept :: changing media profile RTT mode to full");
+        }
+
         synchronized(mLockObj) {
             if (mSession == null) {
                 throw new ImsException("No call to answer",
@@ -1156,6 +1172,30 @@ public class ImsCall implements ICall {
             // Other call update received
             if (mInCall && (mUpdateRequest == UPDATE_UNSPECIFIED)) {
                 mUpdateRequest = UPDATE_NONE;
+            }
+        }
+    }
+
+    /**
+     * Deflects a call.
+     *
+     * @param number number to be deflected to.
+     * @throws ImsException if the IMS service fails to deflect the call
+     */
+    public void deflect(String number) throws ImsException {
+        logi("deflect :: session=" + mSession + ", number=" + Rlog.pii(TAG, number));
+
+        synchronized(mLockObj) {
+            if (mSession == null) {
+                throw new ImsException("No call to deflect",
+                        ImsReasonInfo.CODE_LOCAL_CALL_TERMINATED);
+            }
+
+            try {
+                mSession.deflect(number);
+            } catch (Throwable t) {
+                loge("deflect :: ", t);
+                throw new ImsException("deflect()", t, 0);
             }
         }
     }
@@ -1623,6 +1663,7 @@ public class ImsCall implements ICall {
             // Make a copy of the current ImsCallProfile and modify it to enable RTT
             Parcel p = Parcel.obtain();
             mCallProfile.writeToParcel(p, 0);
+            p.setDataPosition(0);
             ImsCallProfile requestedProfile = new ImsCallProfile(p);
             requestedProfile.mMediaProfile.setRttMode(ImsStreamMediaProfile.RTT_MODE_FULL);
 
@@ -1649,6 +1690,10 @@ public class ImsCall implements ICall {
             }
             mSession.sendRttModifyResponse(status);
         }
+    }
+
+    public void setAnswerWithRtt() {
+        mAnswerWithRtt = true;
     }
 
     private void clear(ImsReasonInfo lastReasonInfo) {
@@ -3072,6 +3117,7 @@ public class ImsCall implements ICall {
         public void callSessionRttModifyRequestReceived(ImsCallSession session,
                 ImsCallProfile callProfile) {
             ImsCall.Listener listener;
+            logi("callSessionRttModifyRequestReceived");
 
             synchronized(ImsCall.this) {
                 listener = mListener;
@@ -3096,6 +3142,7 @@ public class ImsCall implements ICall {
         public void callSessionRttModifyResponseReceived(int status) {
             ImsCall.Listener listener;
 
+            logi("callSessionRttModifyResponseReceived: " + status);
             synchronized(ImsCall.this) {
                 listener = mListener;
             }
