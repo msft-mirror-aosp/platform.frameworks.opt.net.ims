@@ -368,18 +368,16 @@ public class ImsManager {
     private int mPhoneId;
     private final boolean mConfigDynamicBind;
     private @Nullable MmTelFeatureConnection mMmTelFeatureConnection = null;
-    private ImsServiceDeathRecipient mDeathRecipient = new ImsServiceDeathRecipient();
-    // Ut interface for the supplementary service configuration
-    private ImsUt mUt = null;
-    // Interface to get/set ims config items
-    private ImsConfig mConfig = null;
     private boolean mConfigUpdated = false;
 
     private ImsConfigListener mImsConfigListener;
 
+    //TODO: Move these caches into the MmTelFeature Connection and restrict their lifetimes to the
+    // lifetime of the MmTelFeature.
+    // Ut interface for the supplementary service configuration
+    private ImsUt mUt = null;
     // ECBM interface
     private ImsEcbm mEcbm = null;
-
     private ImsMultiEndpoint mMultiEndpoint = null;
 
     private Set<MmTelFeatureConnection.IFeatureUpdate> mStatusCallbacks =
@@ -774,7 +772,7 @@ public class ImsManager {
                 log("setVtSetting(b) : imsServiceAllowTurnOff -> turnOffIms");
                 turnOffIms();
             }
-        } catch (ImsException | RemoteException e) {
+        } catch (ImsException e) {
             // The ImsService is down. Since the SubscriptionManager already recorded the user's
             // preference, it will be resent in updateImsServiceConfig when the ImsPhoneCallTracker
             // reconnects.
@@ -872,7 +870,9 @@ public class ImsManager {
         SubscriptionManager.setSubscriptionProperty(getSubId(),
                 SubscriptionManager.WFC_IMS_ENABLED, booleanToPropertyString(enabled));
 
-        setWfcNonPersistent(enabled, getWfcMode());
+        TelephonyManager tm = (TelephonyManager)
+                mContext.getSystemService(Context.TELEPHONY_SERVICE);
+        setWfcNonPersistent(enabled, getWfcMode(tm.isNetworkRoaming(getSubId())));
     }
 
     /**
@@ -900,7 +900,7 @@ public class ImsManager {
             }
 
             setWfcModeInternal(imsWfcModeFeatureValue);
-        } catch (ImsException | RemoteException e) {
+        } catch (ImsException e) {
             loge("setWfcSetting(): ", e);
         }
     }
@@ -955,17 +955,6 @@ public class ImsManager {
     }
 
     /**
-     * Changes the WFC mode to its default value for Carriers with non-editable WFC settings.
-     */
-    private void updateDefaultWfcMode() {
-        if (DBG) log("updateDefaultWfcMode");
-        if (!getBooleanCarrierConfig(CarrierConfigManager.KEY_EDITABLE_WFC_MODE_BOOL)) {
-            setWfcMode(getIntCarrierConfig(
-                    CarrierConfigManager.KEY_CARRIER_DEFAULT_WFC_IMS_MODE_INT));
-        }
-    }
-
-    /**
      * Returns the user configuration of WFC preference setting
      *
      * @param roaming {@code false} for home network setting, {@code true} for roaming  setting
@@ -989,32 +978,46 @@ public class ImsManager {
      * @param roaming {@code false} for home network setting, {@code true} for roaming  setting
      */
     public int getWfcMode(boolean roaming) {
-        int setting = 0;
+        int setting;
         if (!roaming) {
-            setting = SubscriptionManager.getIntegerSubscriptionProperty(
-                    getSubId(), SubscriptionManager.WFC_IMS_MODE,
-                    SUB_PROPERTY_NOT_INITIALIZED, mContext);
-
-            // SUB_PROPERTY_NOT_INITIALIZED indicates it's never set in sub db.
-            if (setting == SUB_PROPERTY_NOT_INITIALIZED) {
+            // The WFC mode is not editable, return the default setting in the CarrierConfig, not
+            // the user set value.
+            if (!getBooleanCarrierConfig(CarrierConfigManager.KEY_EDITABLE_WFC_MODE_BOOL)) {
                 setting = getIntCarrierConfig(
+                        CarrierConfigManager.KEY_CARRIER_DEFAULT_WFC_IMS_MODE_INT);
+
+            } else {
+                setting = getSettingFromSubscriptionManager(SubscriptionManager.WFC_IMS_MODE,
                         CarrierConfigManager.KEY_CARRIER_DEFAULT_WFC_IMS_MODE_INT);
             }
             if (DBG) log("getWfcMode - setting=" + setting);
         } else {
-            setting = SubscriptionManager.getIntegerSubscriptionProperty(
-                    getSubId(), SubscriptionManager.WFC_IMS_ROAMING_MODE,
-                    SUB_PROPERTY_NOT_INITIALIZED, mContext);
-
-            // SUB_PROPERTY_NOT_INITIALIZED indicates it's never set in sub db.
-            if (setting == SUB_PROPERTY_NOT_INITIALIZED) {
-                setting = getIntCarrierConfig(
-                        CarrierConfigManager.KEY_CARRIER_DEFAULT_WFC_IMS_ROAMING_MODE_INT);
-            }
-
+            // The WFC roaming mode is set in the Settings UI to be the same as the WFC mode if the
+            // roaming mode is set to not "editable" (see
+            // CarrierConfigManager.KEY_EDITABLE_WFC_ROAMING_MODE_BOOL for explanation), so can't
+            // override those settings here by setting the WFC roaming mode to default, like above.
+            setting = getSettingFromSubscriptionManager(
+                    SubscriptionManager.WFC_IMS_ROAMING_MODE,
+                    CarrierConfigManager.KEY_CARRIER_DEFAULT_WFC_IMS_ROAMING_MODE_INT);
             if (DBG) log("getWfcMode (roaming) - setting=" + setting);
         }
         return setting;
+    }
+
+    /**
+     * Returns the SubscriptionManager setting for the subSetting string. If it is not set, default
+     * to the default CarrierConfig value for defaultConfigKey.
+     */
+    private int getSettingFromSubscriptionManager(String subSetting, String defaultConfigKey) {
+        int result;
+        result = SubscriptionManager.getIntegerSubscriptionProperty(getSubId(), subSetting,
+                SUB_PROPERTY_NOT_INITIALIZED, mContext);
+
+        // SUB_PROPERTY_NOT_INITIALIZED indicates it's never set in sub db.
+        if (result == SUB_PROPERTY_NOT_INITIALIZED) {
+            result = getIntCarrierConfig(defaultConfigKey);
+        }
+        return result;
     }
 
     /**
@@ -1064,26 +1067,6 @@ public class ImsManager {
             subId = subIds[0];
         }
         return subId;
-    }
-
-    private static void setWfcModeInternal(Context context, int wfcMode) {
-        final ImsManager imsManager = ImsManager.getInstance(context,
-                SubscriptionManager.getDefaultVoicePhoneId());
-        if (imsManager != null) {
-            final int value = wfcMode;
-            Thread thread = new Thread(new Runnable() {
-                public void run() {
-                    try {
-                        imsManager.getConfigInterface().setConfig(
-                                ImsConfig.ConfigConstants.VOICE_OVER_WIFI_MODE,
-                                value);
-                    } catch (ImsException e) {
-                        // do nothing
-                    }
-                }
-            });
-            thread.start();
-        }
     }
 
     private void setWfcModeInternal(int wfcMode) {
@@ -1316,7 +1299,7 @@ public class ImsManager {
                 }
 
                 mConfigUpdated = true;
-            } catch (ImsException | RemoteException e) {
+            } catch (ImsException e) {
                 loge("updateImsServiceConfig: ", e);
                 mConfigUpdated = false;
             }
@@ -1328,7 +1311,7 @@ public class ImsManager {
      * @return whether feature is On
      * @throws ImsException
      */
-    private boolean updateVolteFeatureValue() throws RemoteException {
+    private boolean updateVolteFeatureValue() throws ImsException {
         boolean available = isVolteEnabledByPlatform();
         boolean enabled = isEnhanced4gLteModeSettingEnabledByUser();
         boolean isNonTty = isNonTtyOrTtyOnVolteEnabled();
@@ -1349,7 +1332,7 @@ public class ImsManager {
      * @return whether feature is On
      * @throws ImsException
      */
-    private boolean updateVideoCallFeatureValue() throws RemoteException {
+    private boolean updateVideoCallFeatureValue() throws ImsException {
         boolean available = isVtEnabledByPlatform();
         boolean enabled = isVtEnabledByUser();
         boolean isNonTty = isNonTtyOrTtyOnVolteEnabled();
@@ -1376,12 +1359,11 @@ public class ImsManager {
      * @return whether feature is On
      * @throws ImsException
      */
-    private boolean updateWfcFeatureAndProvisionedValues() throws RemoteException {
+    private boolean updateWfcFeatureAndProvisionedValues() throws ImsException {
         TelephonyManager tm = new TelephonyManager(mContext, getSubId());
         boolean isNetworkRoaming = tm.isNetworkRoaming();
         boolean available = isWfcEnabledByPlatform();
         boolean enabled = isWfcEnabledByUser();
-        updateDefaultWfcMode();
         int mode = getWfcMode(isNetworkRoaming);
         boolean roaming = isWfcRoamingEnabledByUser();
         boolean isFeatureOn = available && enabled;
@@ -1398,7 +1380,7 @@ public class ImsManager {
             mode = ImsConfig.WfcModeFeatureValueConstants.CELLULAR_PREFERRED;
             roaming = false;
         }
-        setWfcModeInternal(mContext, mode);
+        setWfcModeInternal(mode);
         setWfcRoamingSettingInternal(roaming);
 
         return isFeatureOn;
@@ -1668,7 +1650,6 @@ public class ImsManager {
             mMmTelFeatureConnection.closeConnection();
         }
         mUt = null;
-        mConfig = null;
         mEcbm = null;
         mMultiEndpoint = null;
     }
@@ -1817,41 +1798,44 @@ public class ImsManager {
      * @throws ImsException if getting the setting interface results in an error.
      */
     public ImsConfig getConfigInterface() throws ImsException {
-        if (mConfig != null && mConfig.isBinderAlive()) {
-            return mConfig;
-        }
-
         checkAndThrowExceptionIfServiceUnavailable();
+
         try {
             IImsConfig config = mMmTelFeatureConnection.getConfigInterface();
             if (config == null) {
                 throw new ImsException("getConfigInterface()",
                         ImsReasonInfo.CODE_LOCAL_SERVICE_UNAVAILABLE);
             }
-            mConfig = new ImsConfig(config, mContext);
+            return new ImsConfig(config);
         } catch (RemoteException e) {
             throw new ImsException("getConfigInterface()", e,
                     ImsReasonInfo.CODE_LOCAL_IMS_SERVICE_DOWN);
         }
-        return mConfig;
     }
 
     public void changeMmTelCapability(
             @MmTelFeature.MmTelCapabilities.MmTelCapability int capability,
             @ImsRegistrationImplBase.ImsRegistrationTech int radioTech,
-            boolean isEnabled) throws RemoteException {
+            boolean isEnabled) throws ImsException {
+        checkAndThrowExceptionIfServiceUnavailable();
+
         CapabilityChangeRequest request = new CapabilityChangeRequest();
         if (isEnabled) {
             request.addCapabilitiesToEnableForTech(capability, radioTech);
         } else {
             request.addCapabilitiesToDisableForTech(capability, radioTech);
         }
-        mMmTelFeatureConnection.changeEnabledCapabilities(request, null);
-        if (mImsConfigListener != null) {
-            mImsConfigListener.onSetFeatureResponse(capability,
-                    mMmTelFeatureConnection.getRegistrationTech(),
-                    isEnabled ? ImsConfig.FeatureValueConstants.ON
-                            : ImsConfig.FeatureValueConstants.OFF, -1);
+        try {
+            mMmTelFeatureConnection.changeEnabledCapabilities(request, null);
+            if (mImsConfigListener != null) {
+                mImsConfigListener.onSetFeatureResponse(capability,
+                        mMmTelFeatureConnection.getRegistrationTech(),
+                        isEnabled ? ImsConfig.FeatureValueConstants.ON
+                                : ImsConfig.FeatureValueConstants.OFF, -1);
+            }
+        } catch (RemoteException e) {
+            throw new ImsException("changeMmTelCapability()", e,
+                    ImsReasonInfo.CODE_LOCAL_IMS_SERVICE_DOWN);
         }
     }
 
@@ -1891,6 +1875,15 @@ public class ImsManager {
     /**
      * Sets the UI TTY mode. This is the preferred TTY mode that the user sets in the call
      * settings screen.
+     * @param uiTtyMode TTY Mode, valid options are:
+     *         - {@link com.android.internal.telephony.Phone#TTY_MODE_OFF}
+     *         - {@link com.android.internal.telephony.Phone#TTY_MODE_FULL}
+     *         - {@link com.android.internal.telephony.Phone#TTY_MODE_HCO}
+     *         - {@link com.android.internal.telephony.Phone#TTY_MODE_VCO}
+     * @param onComplete A Message that will be called by the ImsService when it has completed this
+     *           operation or null if not waiting for an async response. The Message must contain a
+     *           valid {@link Message#replyTo} {@link android.os.Messenger}, since it will be passed
+     *           through Binder to another process.
      */
     public void setUiTTYMode(Context context, int uiTtyMode, Message onComplete)
             throws ImsException {
@@ -2154,20 +2147,6 @@ public class ImsManager {
             mRecentDisconnectReasons.removeFirst();
         }
         mRecentDisconnectReasons.addLast(reason);
-    }
-
-    /**
-     * Death recipient class for monitoring IMS service.
-     */
-    private class ImsServiceDeathRecipient implements IBinder.DeathRecipient {
-        @Override
-        public void binderDied() {
-            mMmTelFeatureConnection = null;
-            mUt = null;
-            mConfig = null;
-            mEcbm = null;
-            mMultiEndpoint = null;
-        }
     }
 
     /**
