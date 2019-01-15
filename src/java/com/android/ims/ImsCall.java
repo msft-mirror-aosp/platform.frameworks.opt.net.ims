@@ -475,6 +475,15 @@ public class ImsCall implements ICall {
          */
         public void onMultipartyStateChanged(ImsCall imsCall, boolean isMultiParty) {
         }
+
+        /**
+         * Called when rtt call audio indicator has changed.
+         *
+         * @param imsCall ImsCall object
+         * @param profile updated ImsStreamMediaProfile profile.
+         */
+        public void onRttAudioIndicatorChanged(ImsCall imsCall, ImsStreamMediaProfile profile) {
+        }
     }
 
     // List of update operation for IMS call control
@@ -1230,8 +1239,8 @@ public class ImsCall implements ICall {
         }
     }
 
-    public void terminate(int reason, int overrideReason) throws ImsException {
-        logi("terminate :: reason=" + reason + " ; overrideReadon=" + overrideReason);
+    public void terminate(int reason, int overrideReason) {
+        logi("terminate :: reason=" + reason + " ; overrideReason=" + overrideReason);
         mOverrideReason = overrideReason;
         terminate(reason);
     }
@@ -1240,9 +1249,8 @@ public class ImsCall implements ICall {
      * Terminates an IMS call (e.g. user initiated).
      *
      * @param reason reason code to terminate a call
-     * @throws ImsException if the IMS service fails to terminate the call
      */
-    public void terminate(int reason) throws ImsException {
+    public void terminate(int reason) {
         logi("terminate :: reason=" + reason);
 
         synchronized(mLockObj) {
@@ -1648,16 +1656,20 @@ public class ImsCall implements ICall {
 
     /**
      * Sends a user-requested RTT upgrade request.
+     * @param rttOn true if the request is to turn on RTT, false to turn off.
      */
-    public void sendRttModifyRequest() {
+    public void sendRttModifyRequest(boolean rttOn) {
         logi("sendRttModifyRequest");
 
         synchronized(mLockObj) {
             if (mSession == null) {
                 loge("sendRttModifyRequest::no session");
             }
-            if (mCallProfile.mMediaProfile.isRttCall()) {
-                logi("sendRttModifyRequest::Already RTT call, ignoring.");
+            if (rttOn && mCallProfile.mMediaProfile.isRttCall()) {
+                logi("sendRttModifyRequest::Already RTT call, ignoring request to turn on.");
+                return;
+            } else if (!rttOn && !mCallProfile.mMediaProfile.isRttCall()) {
+                logi("sendRttModifyRequest::Not RTT call, ignoring request to turn off.");
                 return;
             }
             // Make a copy of the current ImsCallProfile and modify it to enable RTT
@@ -1665,7 +1677,9 @@ public class ImsCall implements ICall {
             mCallProfile.writeToParcel(p, 0);
             p.setDataPosition(0);
             ImsCallProfile requestedProfile = new ImsCallProfile(p);
-            requestedProfile.mMediaProfile.setRttMode(ImsStreamMediaProfile.RTT_MODE_FULL);
+            requestedProfile.mMediaProfile.setRttMode(rttOn
+                    ? ImsStreamMediaProfile.RTT_MODE_FULL
+                    : ImsStreamMediaProfile.RTT_MODE_DISABLED);
 
             mSession.sendRttModifyRequest(requestedProfile);
         }
@@ -3168,7 +3182,24 @@ public class ImsCall implements ICall {
                 try {
                     listener.onRttMessageReceived(ImsCall.this, rttMessage);
                 } catch (Throwable t) {
-                    loge("callSessionRttModifyResponseReceived:: ", t);
+                    loge("callSessionRttMessageReceived:: ", t);
+                }
+            }
+        }
+
+        @Override
+        public void callSessionRttAudioIndicatorChanged(ImsStreamMediaProfile profile) {
+            ImsCall.Listener listener;
+
+            synchronized(ImsCall.this) {
+                listener = mListener;
+            }
+
+            if (listener != null) {
+                try {
+                    listener.onRttAudioIndicatorChanged(ImsCall.this, profile);
+                } catch (Throwable t) {
+                    loge("callSessionRttAudioIndicatorChanged:: ", t);
                 }
             }
         }

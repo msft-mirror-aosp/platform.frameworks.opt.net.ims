@@ -21,15 +21,19 @@ import android.app.PendingIntent;
 import android.content.Context;
 import android.os.Bundle;
 import android.os.Handler;
-import android.os.IBinder;
+import android.os.HandlerExecutor;
 import android.os.Looper;
 import android.os.Message;
 import android.os.Parcel;
 import android.os.PersistableBundle;
 import android.os.RemoteException;
 import android.os.SystemProperties;
+import android.provider.Settings;
 import android.telecom.TelecomManager;
 import android.telephony.CarrierConfigManager;
+import android.telephony.ims.ImsMmTelManager;
+import android.telephony.ims.aidl.IImsCapabilityCallback;
+import android.telephony.ims.aidl.IImsRegistrationCallback;
 import android.telephony.ims.stub.ImsRegistrationImplBase;
 import android.telephony.Rlog;
 import android.telephony.SubscriptionManager;
@@ -55,15 +59,18 @@ import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Set;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.CopyOnWriteArraySet;
+import java.util.concurrent.Executor;
+import java.util.concurrent.LinkedBlockingDeque;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Provides APIs for IMS services, such as initiating IMS calls, and provides access to
  * the operator's IMS network. This class is the starting point for any IMS actions.
  * You can acquire an instance of it with {@link #getInstance getInstance()}.</p>
- * <p>The APIs in this class allows you to:</p>
- *
+ * @deprecated use {@link ImsMmTelManager} instead.
  * @hide
  */
 public class ImsManager {
@@ -170,6 +177,8 @@ public class ImsManager {
 
     private static final String TAG = "ImsManager";
     private static final boolean DBG = true;
+
+    private static final int RESPONSE_WAIT_TIME_MS = 3000;
 
     /**
      * Helper class for managing a connection to the ImsManager when the ImsService is unavailable
@@ -434,7 +443,8 @@ public class ImsManager {
 
     /**
      * Returns the user configuration of Enhanced 4G LTE Mode setting for slot. If the option is
-     * not editable ({@link CarrierConfigManager#KEY_EDITABLE_ENHANCED_4G_LTE_BOOL} is false), or
+     * not editable ({@link CarrierConfigManager#KEY_EDITABLE_ENHANCED_4G_LTE_BOOL} is false),
+     * hidden ({@link CarrierConfigManager#KEY_HIDE_ENHANCED_4G_LTE_BOOL} is true), or
      * the setting is not initialized, this method will return default value specified by
      * {@link CarrierConfigManager#KEY_ENHANCED_4G_LTE_ON_BY_DEFAULT_BOOL}.
      *
@@ -448,8 +458,10 @@ public class ImsManager {
         boolean onByDefault = getBooleanCarrierConfig(
                 CarrierConfigManager.KEY_ENHANCED_4G_LTE_ON_BY_DEFAULT_BOOL);
 
-        // If Enhanced 4G LTE Mode is uneditable or not initialized, we use the default value
+        // If Enhanced 4G LTE Mode is uneditable, hidden or not initialized, we use the default
+        // value
         if (!getBooleanCarrierConfig(CarrierConfigManager.KEY_EDITABLE_ENHANCED_4G_LTE_BOOL)
+                || getBooleanCarrierConfig(CarrierConfigManager.KEY_HIDE_ENHANCED_4G_LTE_BOOL)
                 || setting == SUB_PROPERTY_NOT_INITIALIZED) {
             return onByDefault;
         } else {
@@ -474,27 +486,35 @@ public class ImsManager {
 
     /**
      * Change persistent Enhanced 4G LTE Mode setting. If the option is not editable
-     * ({@link CarrierConfigManager#KEY_EDITABLE_ENHANCED_4G_LTE_BOOL} is false), this method will
-     * set the setting to the default value specified by
+     * ({@link CarrierConfigManager#KEY_EDITABLE_ENHANCED_4G_LTE_BOOL} is false)
+     * or hidden ({@link CarrierConfigManager#KEY_HIDE_ENHANCED_4G_LTE_BOOL} is true),
+     * this method will set the setting to the default value specified by
      * {@link CarrierConfigManager#KEY_ENHANCED_4G_LTE_ON_BY_DEFAULT_BOOL}.
-     *
      */
     public void setEnhanced4gLteModeSetting(boolean enabled) {
-        // If editable=false, we must keep default advanced 4G mode.
-        if (!getBooleanCarrierConfig(CarrierConfigManager.KEY_EDITABLE_ENHANCED_4G_LTE_BOOL)) {
+        int subId = getSubId();
+        // If editable=false or hidden=true, we must keep default advanced 4G mode.
+        if (!getBooleanCarrierConfig(CarrierConfigManager.KEY_EDITABLE_ENHANCED_4G_LTE_BOOL) ||
+                getBooleanCarrierConfig(CarrierConfigManager.KEY_HIDE_ENHANCED_4G_LTE_BOOL)) {
             enabled = getBooleanCarrierConfig(
                     CarrierConfigManager.KEY_ENHANCED_4G_LTE_ON_BY_DEFAULT_BOOL);
         }
 
-        int prevSetting = SubscriptionManager.getIntegerSubscriptionProperty(
-                getSubId(), SubscriptionManager.ENHANCED_4G_MODE_ENABLED,
-                SUB_PROPERTY_NOT_INITIALIZED, mContext);
+        int prevSetting = SubscriptionManager.getIntegerSubscriptionProperty(subId,
+                SubscriptionManager.ENHANCED_4G_MODE_ENABLED, SUB_PROPERTY_NOT_INITIALIZED,
+                mContext);
 
         if (prevSetting != (enabled ?
                    ImsConfig.FeatureValueConstants.ON :
                    ImsConfig.FeatureValueConstants.OFF)) {
-            SubscriptionManager.setSubscriptionProperty(getSubId(),
-                    SubscriptionManager.ENHANCED_4G_MODE_ENABLED, booleanToPropertyString(enabled));
+            if (isSubIdValid(subId)) {
+                SubscriptionManager.setSubscriptionProperty(subId,
+                        SubscriptionManager.ENHANCED_4G_MODE_ENABLED,
+                        booleanToPropertyString(enabled));
+            } else {
+                loge("setEnhanced4gLteModeSetting: invalid sub id, can not set property in " +
+                        " siminfo db; subId=" + subId);
+            }
             if (isNonTtyOrTtyOnVolteEnabled()) {
                 try {
                     setAdvanced4GMode(enabled);
@@ -526,8 +546,7 @@ public class ImsManager {
      * supported on a per slot basis.
      */
     public boolean isNonTtyOrTtyOnVolteEnabled() {
-        if (getBooleanCarrierConfig(
-                CarrierConfigManager.KEY_CARRIER_VOLTE_TTY_SUPPORTED_BOOL)) {
+        if (isTtyOnVoLteCapable()) {
             return true;
         }
 
@@ -537,6 +556,10 @@ public class ImsManager {
             return true;
         }
         return tm.getCurrentTtyMode() == TelecomManager.TTY_MODE_OFF;
+    }
+
+    public boolean isTtyOnVoLteCapable() {
+        return getBooleanCarrierConfig(CarrierConfigManager.KEY_CARRIER_VOLTE_TTY_SUPPORTED_BOOL);
     }
 
     /**
@@ -760,8 +783,14 @@ public class ImsManager {
      * Change persistent VT enabled setting for slot.
      */
     public void setVtSetting(boolean enabled) {
-        SubscriptionManager.setSubscriptionProperty(getSubId(), SubscriptionManager.VT_IMS_ENABLED,
-                booleanToPropertyString(enabled));
+        int subId = getSubId();
+        if (isSubIdValid(subId)) {
+            SubscriptionManager.setSubscriptionProperty(subId, SubscriptionManager.VT_IMS_ENABLED,
+                    booleanToPropertyString(enabled));
+        } else {
+            loge("setVtSetting: sub id invalid, skip modifying vt state in subinfo db; subId="
+                    + subId);
+        }
 
         try {
             changeMmTelCapability(MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_VIDEO,
@@ -871,12 +900,18 @@ public class ImsManager {
      * Change persistent WFC enabled setting for slot.
      */
     public void setWfcSetting(boolean enabled) {
-        SubscriptionManager.setSubscriptionProperty(getSubId(),
-                SubscriptionManager.WFC_IMS_ENABLED, booleanToPropertyString(enabled));
+        int subId = getSubId();
+        if (isSubIdValid(subId)) {
+            SubscriptionManager.setSubscriptionProperty(subId, SubscriptionManager.WFC_IMS_ENABLED,
+                    booleanToPropertyString(enabled));
+        } else {
+            loge("setWfcSetting: invalid sub id, can not set WFC setting in siminfo db; subId="
+                    + subId);
+        }
 
         TelephonyManager tm = (TelephonyManager)
                 mContext.getSystemService(Context.TELEPHONY_SERVICE);
-        setWfcNonPersistent(enabled, getWfcMode(tm.isNetworkRoaming(getSubId())));
+        setWfcNonPersistent(enabled, getWfcMode(tm.isNetworkRoaming(subId)));
     }
 
     /**
@@ -952,8 +987,13 @@ public class ImsManager {
     public void setWfcMode(int wfcMode) {
         if (DBG) log("setWfcMode(i) - setting=" + wfcMode);
 
-        SubscriptionManager.setSubscriptionProperty(getSubId(),
-                SubscriptionManager.WFC_IMS_MODE, Integer.toString(wfcMode));
+        int subId = getSubId();
+        if (isSubIdValid(subId)) {
+            SubscriptionManager.setSubscriptionProperty(subId, SubscriptionManager.WFC_IMS_MODE,
+                    Integer.toString(wfcMode));
+        } else {
+            loge("setWfcMode: invalid sub id, skip setting value in siminfo db; subId=" + subId);
+        }
 
         setWfcModeInternal(wfcMode);
     }
@@ -1047,14 +1087,20 @@ public class ImsManager {
      * @param roaming {@code false} for home network setting, {@code true} for roaming setting
      */
     public void setWfcMode(int wfcMode, boolean roaming) {
-        if (!roaming) {
-            if (DBG) log("setWfcMode(i,b) - setting=" + wfcMode);
-            SubscriptionManager.setSubscriptionProperty(getSubId(),
-                    SubscriptionManager.WFC_IMS_MODE, Integer.toString(wfcMode));
+        int subId = getSubId();
+        if (isSubIdValid(subId)) {
+            if (!roaming) {
+                if (DBG) log("setWfcMode(i,b) - setting=" + wfcMode);
+                SubscriptionManager.setSubscriptionProperty(subId, SubscriptionManager.WFC_IMS_MODE,
+                        Integer.toString(wfcMode));
+            } else {
+                if (DBG) log("setWfcMode(i,b) (roaming) - setting=" + wfcMode);
+                SubscriptionManager.setSubscriptionProperty(subId,
+                        SubscriptionManager.WFC_IMS_ROAMING_MODE, Integer.toString(wfcMode));
+            }
         } else {
-            if (DBG) log("setWfcMode(i,b) (roaming) - setting=" + wfcMode);
-            SubscriptionManager.setSubscriptionProperty(getSubId(),
-                    SubscriptionManager.WFC_IMS_ROAMING_MODE, Integer.toString(wfcMode));
+            loge("setWfcMode(i,b): invalid sub id, skip setting setting in siminfo db; subId="
+                    + subId);
         }
 
         TelephonyManager tm = (TelephonyManager)
@@ -1288,6 +1334,7 @@ public class ImsManager {
                 boolean isImsUsed = updateVolteFeatureValue();
                 isImsUsed |= updateWfcFeatureAndProvisionedValues();
                 isImsUsed |= updateVideoCallFeatureValue();
+                isImsUsed |= updateRttConfigValue();
 
                 if (isImsUsed || !isTurnOffImsAllowedByPlatform()) {
                     // Turn on IMS if it is used.
@@ -1417,14 +1464,6 @@ public class ImsManager {
      * busy, it will try to connect before reporting failure.
      */
     public boolean isServiceAvailable() {
-        // If we are busy resolving dynamic IMS bindings, we are not available yet.
-        TelephonyManager tm = (TelephonyManager)
-                mContext.getSystemService(Context.TELEPHONY_SERVICE);
-        if (tm.isResolvingImsBinding()) {
-            Log.d(TAG, "isServiceAvailable: resolving IMS binding, returning false");
-            return false;
-        }
-
         connectIfServiceIsAvailable();
         // mImsServiceProxy will always create an ImsServiceProxy.
         return mMmTelFeatureConnection.isBinderAlive();
@@ -1526,8 +1565,8 @@ public class ImsManager {
      * @param listener To listen to IMS registration events; It cannot be null
      * @throws NullPointerException if {@code listener} is null
      * @throws ImsException if calling the IMS service results in an error
-     * @deprecated use {@link #addRegistrationCallback(ImsRegistrationImplBase.Callback)} and
-     * {@link #addCapabilitiesCallback(ImsFeature.CapabilityCallback)} instead.
+     * @deprecated use {@link #addRegistrationCallback(ImsMmTelManager.RegistrationCallback)}
+     * instead.
      */
     public void addRegistrationListener(ImsConnectionStateListener listener) throws ImsException {
         if (listener == null) {
@@ -1535,29 +1574,32 @@ public class ImsManager {
         }
         addRegistrationCallback(listener);
         // connect the ImsConnectionStateListener to the new CapabilityCallback.
-        addCapabilitiesCallback(new ImsFeature.CapabilityCallback() {
+        addCapabilitiesCallback(new ImsMmTelManager.CapabilityCallback() {
             @Override
-            public void onCapabilitiesStatusChanged(ImsFeature.Capabilities config) {
-                listener.onFeatureCapabilityChangedAdapter(getRegistrationTech(), config);
+            public void onCapabilitiesStatusChanged(
+                    MmTelFeature.MmTelCapabilities capabilities) {
+                listener.onFeatureCapabilityChangedAdapter(getRegistrationTech(), capabilities);
             }
         });
         log("Registration Callback registered.");
     }
 
     /**
-     * Adds a callback that gets called when IMS registration has changed.
-     * @param callback A {@link ImsRegistrationImplBase.Callback} that will notify the caller when
-     *         IMS registration status has changed.
+     * Adds a callback that gets called when IMS registration has changed for the slot ID
+     * associated with this ImsManager.
+     * @param callback A {@link ImsMmTelManager.RegistrationCallback} that will notify the caller
+     *                 when IMS registration status has changed.
      * @throws ImsException when the ImsService connection is not available.
      */
-    public void addRegistrationCallback(ImsRegistrationImplBase.Callback callback)
+    public void addRegistrationCallback(ImsMmTelManager.RegistrationCallback callback)
             throws ImsException {
         if (callback == null) {
             throw new NullPointerException("registration callback can't be null");
         }
 
         try {
-            mMmTelFeatureConnection.addRegistrationCallback(callback);
+            callback.setExecutor(getThreadExecutor());
+            mMmTelFeatureConnection.addRegistrationCallback(callback.getBinder());
             log("Registration Callback registered.");
             // Only record if there isn't a RemoteException.
         } catch (RemoteException e) {
@@ -1568,33 +1610,58 @@ public class ImsManager {
 
     /**
      * Removes a previously added registration callback that was added via
-     * {@link #addRegistrationCallback(ImsRegistrationImplBase.Callback)} .
-     * @param callback A {@link ImsRegistrationImplBase.Callback} that was previously added.
-     * @throws ImsException when the ImsService connection is not available.
+     * {@link #addRegistrationCallback(ImsMmTelManager.RegistrationCallback)} .
+     * @param callback A {@link ImsMmTelManager.RegistrationCallback} that was previously added.
      */
-    public void removeRegistrationListener(ImsRegistrationImplBase.Callback callback)
-        throws ImsException {
+    public void removeRegistrationListener(ImsMmTelManager.RegistrationCallback callback) {
         if (callback == null) {
             throw new NullPointerException("registration callback can't be null");
         }
 
-        try {
-            mMmTelFeatureConnection.removeRegistrationCallback(callback);
-            log("Registration callback removed.");
-        } catch (RemoteException e) {
-            throw new ImsException("removeRegistrationCallback(IRIB)", e,
-                    ImsReasonInfo.CODE_LOCAL_IMS_SERVICE_DOWN);
+        mMmTelFeatureConnection.removeRegistrationCallback(callback.getBinder());
+        log("Registration callback removed.");
+    }
+
+    /**
+     * Adds a callback that gets called when IMS registration has changed for a specific
+     * subscription.
+     *
+     * @param callback A {@link ImsMmTelManager.RegistrationCallback} that will notify the caller
+     *                 when IMS registration status has changed.
+     * @param subId The subscription ID to register this registration callback for.
+     * @throws RemoteException when the ImsService connection is not available.
+     */
+    public void addRegistrationCallbackForSubscription(IImsRegistrationCallback callback, int subId)
+            throws RemoteException {
+        if (callback == null) {
+            throw new NullPointerException("registration callback can't be null");
         }
+        mMmTelFeatureConnection.addRegistrationCallbackForSubscription(callback, subId);
+        log("Registration Callback registered.");
+        // Only record if there isn't a RemoteException.
+    }
+
+    /**
+     * Removes a previously registered {@link ImsMmTelManager.RegistrationCallback} callback that is
+     * associated with a specific subscription.
+     */
+    public void removeRegistrationCallbackForSubscription(IImsRegistrationCallback callback,
+            int subId) {
+        if (callback == null) {
+            throw new NullPointerException("registration callback can't be null");
+        }
+
+        mMmTelFeatureConnection.removeRegistrationCallbackForSubscription(callback, subId);
     }
 
     /**
      * Adds a callback that gets called when MMTel capability status has changed, for example when
      * Voice over IMS or VT over IMS is not available currently.
-     * @param callback A {@link ImsFeature.CapabilityCallback} that will notify the caller when
-     *         MMTel capability status has changed.
+     * @param callback A {@link ImsMmTelManager.CapabilityCallback} that will notify the caller when
+     *                 MMTel capability status has changed.
      * @throws ImsException when the ImsService connection is not available.
      */
-    public void addCapabilitiesCallback(ImsFeature.CapabilityCallback callback)
+    public void addCapabilitiesCallback(ImsMmTelManager.CapabilityCallback callback)
             throws ImsException {
         if (callback == null) {
             throw new NullPointerException("capabilities callback can't be null");
@@ -1602,13 +1669,59 @@ public class ImsManager {
 
         checkAndThrowExceptionIfServiceUnavailable();
         try {
-            mMmTelFeatureConnection.addCapabilityCallback(callback);
+            callback.setExecutor(getThreadExecutor());
+            mMmTelFeatureConnection.addCapabilityCallback(callback.getBinder());
             log("Capability Callback registered.");
             // Only record if there isn't a RemoteException.
         } catch (RemoteException e) {
             throw new ImsException("addCapabilitiesCallback(IF)", e,
                     ImsReasonInfo.CODE_LOCAL_IMS_SERVICE_DOWN);
         }
+    }
+
+    /**
+     * Removes a previously registered {@link ImsMmTelManager.CapabilityCallback} callback.
+     * @throws ImsException when the ImsService connection is not available.
+     */
+    public void removeCapabilitiesCallback(ImsMmTelManager.CapabilityCallback callback)
+            throws ImsException {
+        if (callback == null) {
+            throw new NullPointerException("capabilities callback can't be null");
+        }
+
+        checkAndThrowExceptionIfServiceUnavailable();
+        mMmTelFeatureConnection.removeCapabilityCallback(callback.getBinder());
+    }
+
+    /**
+     * Adds a callback that gets called when IMS capabilities have changed for a specified
+     * subscription.
+     * @param callback A {@link ImsMmTelManager.CapabilityCallback} that will notify the caller
+     *                 when the IMS Capabilities have changed.
+     * @param subId The subscription that is associated with the callback.
+     * @throws RemoteException when the ImsService connection is not available.
+     */
+    public void addCapabilitiesCallbackForSubscription(IImsCapabilityCallback callback, int subId)
+            throws RemoteException {
+        if (callback == null) {
+            throw new NullPointerException("registration callback can't be null");
+        }
+
+        mMmTelFeatureConnection.addCapabilityCallbackForSubscription(callback, subId);
+        log("Capability Callback registered for subscription.");
+    }
+
+    /**
+     * Removes a previously registered {@link ImsMmTelManager.CapabilityCallback} that was
+     * associated with a specific subscription.
+     */
+    public void removeCapabilitiesCallbackForSubscription(IImsCapabilityCallback callback,
+            int subId) {
+        if (callback == null) {
+            throw new NullPointerException("capabilities callback can't be null");
+        }
+
+        mMmTelFeatureConnection.removeCapabilityCallbackForSubscription(callback, subId);
     }
 
     /**
@@ -1626,14 +1739,9 @@ public class ImsManager {
         }
 
         checkAndThrowExceptionIfServiceUnavailable();
-        try {
-            mMmTelFeatureConnection.removeRegistrationCallback(listener);
-            log("Registration Callback/Listener registered.");
-            // Only record if there isn't a RemoteException.
-        } catch (RemoteException e) {
-            throw new ImsException("addRegistrationCallback()", e,
-                    ImsReasonInfo.CODE_LOCAL_IMS_SERVICE_DOWN);
-        }
+        mMmTelFeatureConnection.removeRegistrationCallback(listener.getBinder());
+        log("Registration Callback/Listener registered.");
+        // Only record if there isn't a RemoteException.
     }
 
     public @ImsRegistrationImplBase.ImsRegistrationTech int getRegistrationTech() {
@@ -1843,22 +1951,84 @@ public class ImsManager {
         }
     }
 
+    public boolean updateRttConfigValue() {
+        boolean isCarrierSupported =
+                getBooleanCarrierConfig(CarrierConfigManager.KEY_RTT_SUPPORTED_BOOL);
+        boolean isRttEnabled = Settings.Secure.getInt(mContext.getContentResolver(),
+                Settings.Secure.RTT_CALLING_MODE, 0) != 0;
+        Log.i(ImsManager.class.getSimpleName(), "update RTT value " + isRttEnabled);
+        if (isCarrierSupported == true) {
+            setRttConfig(isRttEnabled);
+        }
+        return isCarrierSupported && isRttEnabled;
+    }
+
+    private void setRttConfig(boolean enabled) {
+        final int value = enabled ? ImsConfig.FeatureValueConstants.ON :
+                ImsConfig.FeatureValueConstants.OFF;
+        Thread thread = new Thread(() -> {
+            try {
+                Log.i(ImsManager.class.getSimpleName(), "Setting RTT enabled to " + enabled);
+                getConfigInterface().setProvisionedValue(
+                        ImsConfig.ConfigConstants.RTT_SETTING_ENABLED, value);
+            } catch (ImsException e) {
+                Log.e(ImsManager.class.getSimpleName(), "Unable to set RTT value enabled to "
+                        + enabled + ": " + e);
+            }
+        });
+        thread.start();
+    }
+
+    public boolean queryMmTelCapability(
+            @MmTelFeature.MmTelCapabilities.MmTelCapability int capability,
+            @ImsRegistrationImplBase.ImsRegistrationTech int radioTech) throws ImsException {
+        checkAndThrowExceptionIfServiceUnavailable();
+
+        BlockingQueue<Boolean> result = new LinkedBlockingDeque<>(1);
+
+        try {
+            mMmTelFeatureConnection.queryEnabledCapabilities(capability, radioTech,
+                    new IImsCapabilityCallback.Stub() {
+                        @Override
+                        public void onQueryCapabilityConfiguration(int resCap, int resTech,
+                                boolean enabled) {
+                            if (resCap == capability && resTech == radioTech) {
+                                result.offer(enabled);
+                            }
+                        }
+
+                        @Override
+                        public void onChangeCapabilityConfigurationError(int capability,
+                                int radioTech, int reason) {
+
+                        }
+
+                        @Override
+                        public void onCapabilitiesStatusChanged(int config) {
+
+                        }
+                    });
+        } catch (RemoteException e) {
+            throw new ImsException("queryMmTelCapability()", e,
+                    ImsReasonInfo.CODE_LOCAL_IMS_SERVICE_DOWN);
+        }
+
+        try {
+            return result.poll(RESPONSE_WAIT_TIME_MS, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Log.w(TAG, "queryMmTelCapability: interrupted while waiting for response");
+        }
+        return false;
+    }
+
     public void setRttEnabled(boolean enabled) {
         try {
-            setAdvanced4GMode(enabled || isEnhanced4gLteModeSettingEnabledByUser());
-            final int value = enabled ? ImsConfig.FeatureValueConstants.ON :
-                    ImsConfig.FeatureValueConstants.OFF;
-            Thread thread = new Thread(() -> {
-                try {
-                    Log.i(ImsManager.class.getSimpleName(), "Setting RTT enabled to " + enabled);
-                    getConfigInterface().setProvisionedValue(
-                            ImsConfig.ConfigConstants.RTT_SETTING_ENABLED, value);
-                } catch (ImsException e) {
-                    Log.e(ImsManager.class.getSimpleName(), "Unable to set RTT enabled to "
-                            + enabled + ": " + e);
-                }
-            });
-            thread.start();
+            if (enabled) {
+                setEnhanced4gLteModeSetting(enabled);
+            } else {
+                setAdvanced4GMode(enabled || isEnhanced4gLteModeSettingEnabledByUser());
+            }
+            setRttConfig(enabled);
         } catch (ImsException e) {
             Log.e(ImsManager.class.getSimpleName(), "Unable to set RTT enabled to " + enabled
                     + ": " + e);
@@ -1931,6 +2101,13 @@ public class ImsManager {
         return mMmTelFeatureConnection.getFeatureState();
     }
 
+    private Executor getThreadExecutor() {
+        if (Looper.myLooper() == null) {
+            Looper.prepare();
+        }
+        return new HandlerExecutor(new Handler(Looper.myLooper()));
+    }
+
     /**
      * Get the boolean config from carrier config manager.
      *
@@ -1938,15 +2115,10 @@ public class ImsManager {
      * @return boolean value of corresponding key.
      */
     private boolean getBooleanCarrierConfig(String key) {
-        int[] subIds = SubscriptionManager.getSubId(mPhoneId);
-        int subId = SubscriptionManager.INVALID_SUBSCRIPTION_ID;
-        if (subIds != null && subIds.length >= 1) {
-            subId = subIds[0];
-        }
         PersistableBundle b = null;
         if (mConfigManager != null) {
             // If an invalid subId is used, this bundle will contain default values.
-            b = mConfigManager.getConfigForSubId(subId);
+            b = mConfigManager.getConfigForSubId(getSubId());
         }
         if (b != null) {
             return b.getBoolean(key);
@@ -1963,15 +2135,10 @@ public class ImsManager {
      * @return integer value of corresponding key.
      */
     private int getIntCarrierConfig(String key) {
-        int[] subIds = SubscriptionManager.getSubId(mPhoneId);
-        int subId = SubscriptionManager.INVALID_SUBSCRIPTION_ID;
-        if (subIds != null && subIds.length >= 1) {
-            subId = subIds[0];
-        }
         PersistableBundle b = null;
         if (mConfigManager != null) {
             // If an invalid subId is used, this bundle will contain default values.
-            b = mConfigManager.getConfigForSubId(subId);
+            b = mConfigManager.getConfigForSubId(getSubId());
         }
         if (b != null) {
             return b.getInt(key);
@@ -2306,33 +2473,39 @@ public class ImsManager {
      * @hide
      */
     public void factoryReset() {
-        // Set VoLTE to default
-        SubscriptionManager.setSubscriptionProperty(getSubId(),
-                SubscriptionManager.ENHANCED_4G_MODE_ENABLED,
-                booleanToPropertyString(getBooleanCarrierConfig(
-                        CarrierConfigManager.KEY_ENHANCED_4G_LTE_ON_BY_DEFAULT_BOOL)));
+        int subId = getSubId();
+        if (isSubIdValid(subId)) {
+            // Set VoLTE to default
+            SubscriptionManager.setSubscriptionProperty(subId,
+                    SubscriptionManager.ENHANCED_4G_MODE_ENABLED,
+                    booleanToPropertyString(getBooleanCarrierConfig(
+                            CarrierConfigManager.KEY_ENHANCED_4G_LTE_ON_BY_DEFAULT_BOOL)));
 
-        // Set VoWiFi to default
-        SubscriptionManager.setSubscriptionProperty(getSubId(),
-                SubscriptionManager.WFC_IMS_ENABLED,
-                booleanToPropertyString(getBooleanCarrierConfig(
-                        CarrierConfigManager.KEY_CARRIER_DEFAULT_WFC_IMS_ENABLED_BOOL)));
+            // Set VoWiFi to default
+            SubscriptionManager.setSubscriptionProperty(subId,
+                    SubscriptionManager.WFC_IMS_ENABLED,
+                    booleanToPropertyString(getBooleanCarrierConfig(
+                            CarrierConfigManager.KEY_CARRIER_DEFAULT_WFC_IMS_ENABLED_BOOL)));
 
-        // Set VoWiFi mode to default
-        SubscriptionManager.setSubscriptionProperty(getSubId(),
-                SubscriptionManager.WFC_IMS_MODE,
-                Integer.toString(getIntCarrierConfig(
-                        CarrierConfigManager.KEY_CARRIER_DEFAULT_WFC_IMS_MODE_INT)));
+            // Set VoWiFi mode to default
+            SubscriptionManager.setSubscriptionProperty(subId,
+                    SubscriptionManager.WFC_IMS_MODE,
+                    Integer.toString(getIntCarrierConfig(
+                            CarrierConfigManager.KEY_CARRIER_DEFAULT_WFC_IMS_MODE_INT)));
 
-        // Set VoWiFi roaming to default
-        SubscriptionManager.setSubscriptionProperty(getSubId(),
-                SubscriptionManager.WFC_IMS_ROAMING_ENABLED,
-                booleanToPropertyString(getBooleanCarrierConfig(
-                        CarrierConfigManager.KEY_CARRIER_DEFAULT_WFC_IMS_ROAMING_ENABLED_BOOL)));
+            // Set VoWiFi roaming to default
+            SubscriptionManager.setSubscriptionProperty(subId,
+                    SubscriptionManager.WFC_IMS_ROAMING_ENABLED,
+                    booleanToPropertyString(getBooleanCarrierConfig(
+                            CarrierConfigManager.KEY_CARRIER_DEFAULT_WFC_IMS_ROAMING_ENABLED_BOOL)));
 
-        // Set VT to default
-        SubscriptionManager.setSubscriptionProperty(getSubId(),
-                SubscriptionManager.VT_IMS_ENABLED, booleanToPropertyString(true));
+
+            // Set VT to default
+            SubscriptionManager.setSubscriptionProperty(subId,
+                    SubscriptionManager.VT_IMS_ENABLED, booleanToPropertyString(true));
+        } else {
+            loge("factoryReset: invalid sub id, can not reset siminfo db settings; subId=" + subId);
+        }
 
         // Push settings to ImsConfig
         updateImsServiceConfig(true);
@@ -2390,5 +2563,16 @@ public class ImsManager {
         pw.println("  isVtProvisionedOnDevice = " + isVtProvisionedOnDevice());
         pw.println("  isWfcProvisionedOnDevice = " + isWfcProvisionedOnDevice());
         pw.flush();
+    }
+
+    /**
+     * Determines if a sub id is valid.
+     * Mimics the logic in SubscriptionController.validateSubId.
+     * @param subId The sub id to check.
+     * @return {@code true} if valid, {@code false} otherwise.
+     */
+    private boolean isSubIdValid(int subId) {
+        return SubscriptionManager.isValidSubscriptionId(subId) &&
+                subId != SubscriptionManager.DEFAULT_SUBSCRIPTION_ID;
     }
 }
