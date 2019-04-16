@@ -19,6 +19,7 @@ package com.android.ims;
 import android.annotation.Nullable;
 import android.app.PendingIntent;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerExecutor;
@@ -228,45 +229,50 @@ public class ImsManager {
                 new MmTelFeatureConnection.IFeatureUpdate() {
                     @Override
                     public void notifyStateChanged() {
-                        try {
-                            int status = ImsFeature.STATE_UNAVAILABLE;
-                            synchronized (mLock) {
-                                if (mImsManager != null) {
-                                    status = mImsManager.getImsServiceState();
+                        mExecutor.execute(() -> {
+                            try {
+                                int status = ImsFeature.STATE_UNAVAILABLE;
+                                synchronized (mLock) {
+                                    if (mImsManager != null) {
+                                        status = mImsManager.getImsServiceState();
+                                    }
                                 }
+                                switch (status) {
+                                    case ImsFeature.STATE_READY: {
+                                        notifyReady();
+                                        break;
+                                    }
+                                    case ImsFeature.STATE_INITIALIZING:
+                                        // fall through
+                                    case ImsFeature.STATE_UNAVAILABLE: {
+                                        notifyNotReady();
+                                        break;
+                                    }
+                                    default: {
+                                        Log.w(TAG, "Unexpected State!");
+                                    }
+                                }
+                            } catch (ImsException e) {
+                                // Could not get the ImsService, retry!
+                                notifyNotReady();
+                                retryGetImsService();
                             }
-                            switch (status) {
-                                case ImsFeature.STATE_READY: {
-                                    notifyReady();
-                                    break;
-                                }
-                                case ImsFeature.STATE_INITIALIZING:
-                                    // fall through
-                                case ImsFeature.STATE_UNAVAILABLE: {
-                                    notifyNotReady();
-                                    break;
-                                }
-                                default: {
-                                    Log.w(TAG, "Unexpected State!");
-                                }
-                            }
-                        } catch (ImsException e) {
-                            // Could not get the ImsService, retry!
-                            notifyNotReady();
-                            retryGetImsService();
-                        }
+                        });
                     }
 
                     @Override
                     public void notifyUnavailable() {
-                        notifyNotReady();
-                        retryGetImsService();
+                        mExecutor.execute(() -> {
+                            notifyNotReady();
+                            retryGetImsService();
+                        });
                     }
                 };
 
         private final Context mContext;
         private final int mPhoneId;
         private final Listener mListener;
+        private final Executor mExecutor;
         private final Object mLock = new Object();
 
         private int mRetryCount = 0;
@@ -287,21 +293,30 @@ public class ImsManager {
             mContext = context;
             mPhoneId = phoneId;
             mListener = listener;
+            mExecutor = new HandlerExecutor(this);
         }
 
-        public Connector(Context context, int phoneId, Listener listener, Looper looper) {
-            super(looper);
+        @VisibleForTesting
+        public Connector(Context context, int phoneId, Listener listener, Executor executor) {
             mContext = context;
             mPhoneId = phoneId;
             mListener= listener;
+            mExecutor = executor;
         }
+
 
         /**
          * Start the creation of a connection to the underlying ImsService implementation. When the
          * service is connected, {@link Listener#connectionReady(ImsManager)} will be called with
          * an active ImsManager instance.
+         *
+         * If this device does not support an ImsStack (i.e. doesn't support
+         * {@link PackageManager#FEATURE_TELEPHONY_IMS} feature), this method will do nothing.
          */
         public void connect() {
+            if (!ImsManager.isImsSupportedOnDevice(mContext)) {
+                return;
+            }
             mRetryCount = 0;
             // Send a message to connect to the Ims Service and open a connection through
             // getImsService().
@@ -324,15 +339,18 @@ public class ImsManager {
 
         private void retryGetImsService() {
             synchronized (mLock) {
-                // remove callback so we do not receive updates from old ImsServiceProxy when
-                // switching between ImsServices.
-                mImsManager.removeNotifyStatusChangedCallback(mNotifyStatusChangedCallback);
-                //Leave mImsManager as null, then CallStateException will be thrown when dialing
-                mImsManager = null;
+                if (mImsManager != null) {
+                    // remove callback so we do not receive updates from old ImsServiceProxy when
+                    // switching between ImsServices.
+                    mImsManager.removeNotifyStatusChangedCallback(mNotifyStatusChangedCallback);
+                    //Leave mImsManager as null, then CallStateException will be thrown when dialing
+                    mImsManager = null;
+                }
+
+                // Exponential backoff during retry, limited to 32 seconds.
+                removeCallbacks(mGetServiceRunnable);
+                postDelayed(mGetServiceRunnable, mRetryTimeout.get());
             }
-            // Exponential backoff during retry, limited to 32 seconds.
-            removeCallbacks(mGetServiceRunnable);
-            postDelayed(mGetServiceRunnable, mRetryTimeout.get());
         }
 
         private void getImsService() throws ImsException {
@@ -437,6 +455,10 @@ public class ImsManager {
         }
     }
 
+    public static boolean isImsSupportedOnDevice(Context context) {
+        return context.getPackageManager().hasSystemFeature(PackageManager.FEATURE_TELEPHONY_IMS);
+    }
+
     /**
      * Returns the user configuration of Enhanced 4G LTE Mode setting.
      *
@@ -504,6 +526,10 @@ public class ImsManager {
      * {@link CarrierConfigManager#KEY_ENHANCED_4G_LTE_ON_BY_DEFAULT_BOOL}.
      */
     public void setEnhanced4gLteModeSetting(boolean enabled) {
+        if (enabled && !isVolteProvisionedOnDevice()) {
+            log("setEnhanced4gLteModeSetting: Not possible to enable VoLTE due to provisioning.");
+            return;
+        }
         int subId = getSubId();
         // If editable=false or hidden=true, we must keep default advanced 4G mode.
         if (!getBooleanCarrierConfig(CarrierConfigManager.KEY_EDITABLE_ENHANCED_4G_LTE_BOOL) ||
@@ -795,6 +821,11 @@ public class ImsManager {
      * Change persistent VT enabled setting for slot.
      */
     public void setVtSetting(boolean enabled) {
+        if (enabled && !isVtProvisionedOnDevice()) {
+            log("setVtSetting: Not possible to enable Vt due to provisioning.");
+            return;
+        }
+
         int subId = getSubId();
         if (isSubIdValid(subId)) {
             SubscriptionManager.setSubscriptionProperty(subId, SubscriptionManager.VT_IMS_ENABLED,
@@ -912,6 +943,11 @@ public class ImsManager {
      * Change persistent WFC enabled setting for slot.
      */
     public void setWfcSetting(boolean enabled) {
+        if (enabled && !isWfcProvisionedOnDevice()) {
+            log("setWfcSetting: Not possible to enable WFC due to provisioning.");
+            return;
+        }
+
         int subId = getSubId();
         if (isSubIdValid(subId)) {
             SubscriptionManager.setSubscriptionProperty(subId, SubscriptionManager.WFC_IMS_ENABLED,
@@ -1059,13 +1095,18 @@ public class ImsManager {
             }
             if (DBG) log("getWfcMode - setting=" + setting);
         } else {
-            // The WFC roaming mode is set in the Settings UI to be the same as the WFC mode if the
-            // roaming mode is set to not "editable" (see
-            // CarrierConfigManager.KEY_EDITABLE_WFC_ROAMING_MODE_BOOL for explanation), so can't
-            // override those settings here by setting the WFC roaming mode to default, like above.
-            setting = getSettingFromSubscriptionManager(
-                    SubscriptionManager.WFC_IMS_ROAMING_MODE,
-                    CarrierConfigManager.KEY_CARRIER_DEFAULT_WFC_IMS_ROAMING_MODE_INT);
+            if (getBooleanCarrierConfig(
+                    CarrierConfigManager.KEY_USE_WFC_HOME_NETWORK_MODE_IN_ROAMING_NETWORK_BOOL)) {
+                setting = getWfcMode(false);
+            } else if (!getBooleanCarrierConfig(
+                    CarrierConfigManager.KEY_EDITABLE_WFC_ROAMING_MODE_BOOL)) {
+                setting = getIntCarrierConfig(
+                        CarrierConfigManager.KEY_CARRIER_DEFAULT_WFC_IMS_ROAMING_MODE_INT);
+            } else {
+                setting = getSettingFromSubscriptionManager(
+                        SubscriptionManager.WFC_IMS_ROAMING_MODE,
+                        CarrierConfigManager.KEY_CARRIER_DEFAULT_WFC_IMS_ROAMING_MODE_INT);
+            }
             if (DBG) log("getWfcMode (roaming) - setting=" + setting);
         }
         return setting;
@@ -2339,6 +2380,10 @@ public class ImsManager {
      */
     private void checkAndThrowExceptionIfServiceUnavailable()
             throws ImsException {
+        if (!isImsSupportedOnDevice(mContext)) {
+            throw new ImsException("IMS not supported on device.",
+                    ImsReasonInfo.CODE_LOCAL_IMS_NOT_SUPPORTED_ON_DEVICE);
+        }
         if (mMmTelFeatureConnection == null || !mMmTelFeatureConnection.isBinderAlive()) {
             createImsService();
 
@@ -2728,6 +2773,7 @@ public class ImsManager {
 
     public void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
         pw.println("ImsManager:");
+        pw.println("  device supports IMS = " + isImsSupportedOnDevice(mContext));
         pw.println("  mPhoneId = " + mPhoneId);
         pw.println("  mConfigUpdated = " + mConfigUpdated);
         pw.println("  mImsServiceProxy = " + mMmTelFeatureConnection);
