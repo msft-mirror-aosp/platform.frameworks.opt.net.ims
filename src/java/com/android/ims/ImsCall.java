@@ -27,6 +27,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Message;
 import android.os.Parcel;
+import android.telecom.Call;
 import android.telecom.ConferenceParticipant;
 import android.telecom.Connection;
 import android.telephony.Rlog;
@@ -1751,6 +1752,14 @@ public class ImsCall implements ICall {
         return mImsCallSessionListenerProxy;
     }
 
+    /**
+     * @return the current Listener.  NOTE: ONLY FOR USE WITH TESTING.
+     */
+    @VisibleForTesting
+    public Listener getListener() {
+        return mListener;
+    }
+
     private ImsCall createNewCall(ImsCallSession session, ImsCallProfile profile) {
         ImsCall call = new ImsCall(mContext, profile);
 
@@ -1873,7 +1882,7 @@ public class ImsCall implements ICall {
 
             if (connectionState != Connection.STATE_DISCONNECTED) {
                 ConferenceParticipant conferenceParticipant = new ConferenceParticipant(handle,
-                        displayName, endpointUri, connectionState);
+                        displayName, endpointUri, connectionState, Call.Details.DIRECTION_UNKNOWN);
                 mConferenceParticipants.add(conferenceParticipant);
             }
         }
