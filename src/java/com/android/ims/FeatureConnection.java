@@ -23,16 +23,14 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.RemoteException;
 import android.telephony.TelephonyManager;
-import android.telephony.ims.aidl.IImsMmTelFeature;
-import android.telephony.ims.aidl.IImsRcsFeature;
 import android.telephony.ims.aidl.IImsRegistration;
 import android.telephony.ims.feature.ImsFeature;
 import android.telephony.ims.stub.ImsRegistrationImplBase;
-import android.telephony.Rlog;
 import android.util.Log;
 
-import com.android.internal.annotations.VisibleForTesting;
 import com.android.ims.internal.IImsServiceFeatureCallback;
+import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.telephony.util.HandlerExecutor;
 
 import java.util.concurrent.Executor;
 
@@ -135,6 +133,7 @@ public abstract class FeatureConnection {
                     mBinder.unlinkToDeath(mDeathRecipient, 0);
                 }
                 if (mStatusCallback != null) {
+                    Log.d(TAG, "onRemovedOrDied: notifyUnavailable");
                     mStatusCallback.notifyUnavailable();
                 }
             }
@@ -184,16 +183,17 @@ public abstract class FeatureConnection {
     protected abstract void handleImsStatusChangedCallback(int slotId, int feature, int status);
 
     public @ImsRegistrationImplBase.ImsRegistrationTech int getRegistrationTech()
-        throws RemoteException {
+            throws RemoteException {
         IImsRegistration registration = getRegistration();
         if (registration != null) {
             return registration.getRegistrationTechnology();
         } else {
+            Log.w(TAG, "getRegistrationTech: ImsRegistration is null");
             return ImsRegistrationImplBase.REGISTRATION_TECH_NONE;
         }
     }
 
-    protected @Nullable IImsRegistration getRegistration() {
+    public @Nullable IImsRegistration getRegistration() {
         synchronized (mLock) {
             // null if cache is invalid;
             if (mRegistrationBinder != null) {
@@ -214,7 +214,8 @@ public abstract class FeatureConnection {
         return mRegistrationBinder;
     }
 
-    protected void checkServiceIsReady() throws RemoteException {
+    @VisibleForTesting
+    public void checkServiceIsReady() throws RemoteException {
         if (!sImsSupportedOnDevice) {
             throw new RemoteException("IMS is not supported on this device.");
         }
@@ -262,7 +263,8 @@ public abstract class FeatureConnection {
             // Cache only non-null value for feature status.
             mFeatureStateCached = state;
         }
-        Log.i(TAG, "getFeatureState - returning " + ImsFeature.STATE_LOG_MAP.get(state));
+        Log.i(TAG + " [" + mSlotId + "]", "getFeatureState - returning "
+                + ImsFeature.STATE_LOG_MAP.get(state));
         return state;
     }
 
