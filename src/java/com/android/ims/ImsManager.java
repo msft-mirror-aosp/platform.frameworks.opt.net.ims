@@ -30,10 +30,10 @@ import android.os.PersistableBundle;
 import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.os.SystemProperties;
+import android.provider.Settings;
 import android.telecom.TelecomManager;
 import android.telephony.AccessNetworkConstants;
 import android.telephony.CarrierConfigManager;
-import android.telephony.Rlog;
 import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyManager;
 import android.telephony.ims.ImsCallProfile;
@@ -61,6 +61,8 @@ import com.android.ims.internal.IImsMultiEndpoint;
 import com.android.ims.internal.IImsUt;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.telephony.ITelephony;
+import com.android.internal.telephony.util.HandlerExecutor;
+import com.android.telephony.Rlog;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
@@ -133,9 +135,12 @@ public class ImsManager implements IFeatureConnector {
      * Action to broadcast when ImsService registration fails.
      * Internal use only.
      * @hide
+     * @deprecated use {@link android.telephony.ims.ImsManager#ACTION_WFC_IMS_REGISTRATION_ERROR}
+     * instead.
      */
+    @Deprecated
     public static final String ACTION_IMS_REGISTRATION_ERROR =
-            "com.android.ims.REGISTRATION_ERROR";
+            android.telephony.ims.ImsManager.ACTION_WFC_IMS_REGISTRATION_ERROR;
 
     /**
      * Part of the ACTION_IMS_SERVICE_UP or _DOWN intents.
@@ -188,6 +193,8 @@ public class ImsManager implements IFeatureConnector {
      */
     public static final String EXTRA_IS_UNKNOWN_CALL = "android:isUnknown";
 
+    private static final int SUBINFO_PROPERTY_FALSE = 0;
+
     private static final int SYSTEM_PROPERTY_NOT_SET = -1;
 
     // -1 indicates a subscriptionProperty value that is never set.
@@ -206,15 +213,17 @@ public class ImsManager implements IFeatureConnector {
     private static class ImsExecutorFactory implements ExecutorFactory {
 
         private final HandlerThread mThreadHandler;
+        private final Handler mHandler;
 
         public ImsExecutorFactory() {
             mThreadHandler = new HandlerThread("ImsHandlerThread");
             mThreadHandler.start();
+            mHandler = new Handler(mThreadHandler.getLooper());
         }
 
         @Override
         public void executeRunnable(Runnable runnable) {
-            mThreadHandler.getThreadHandler().post(runnable);
+            mHandler.post(runnable);
         }
     }
 
@@ -538,6 +547,18 @@ public class ImsManager implements IFeatureConnector {
         if (getBooleanCarrierConfig(
                 CarrierConfigManager.KEY_CARRIER_VOLTE_PROVISIONING_REQUIRED_BOOL)) {
             return isVolteProvisioned();
+        }
+
+        return true;
+    }
+
+    /**
+     * Indicates whether EAB is provisioned on this slot.
+     */
+    public boolean isEabProvisionedOnDevice() {
+        if (getBooleanCarrierConfig(
+                CarrierConfigManager.KEY_CARRIER_RCS_PROVISIONING_REQUIRED_BOOL)) {
+            return isEabProvisioned();
         }
 
         return true;
@@ -1536,10 +1557,10 @@ public class ImsManager implements IFeatureConnector {
     @Override
     @VisibleForTesting
     public void addNotifyStatusChangedCallbackIfAvailable(FeatureConnection.IFeatureUpdate c)
-            throws ImsException {
+            throws android.telephony.ims.ImsException {
         if (!mMmTelFeatureConnection.isBinderAlive()) {
-            throw new ImsException("Binder is not active!",
-                    ImsReasonInfo.CODE_LOCAL_IMS_SERVICE_DOWN);
+            throw new android.telephony.ims.ImsException("Can not connect to ImsService",
+                    android.telephony.ims.ImsException.CODE_ERROR_SERVICE_UNAVAILABLE);
         }
         if (c != null) {
             mStatusCallbacks.add(c);
@@ -1929,7 +1950,7 @@ public class ImsManager implements IFeatureConnector {
         call.setListener(listener);
         ImsCallSession session = createCallSession(profile);
 
-        if ((callees != null) && (callees.length == 1)) {
+        if ((callees != null) && (callees.length == 1) && !(session.isMultiparty())) {
             call.start(session, callees[0]);
         } else {
             call.start(session, callees);
@@ -2024,22 +2045,21 @@ public class ImsManager implements IFeatureConnector {
     }
 
     public boolean updateRttConfigValue() {
-        // If there's no active sub anywhere on the device, enable RTT on the modem so that
-        // the device can make an emergency call.
         boolean isCarrierSupported =
                 getBooleanCarrierConfig(CarrierConfigManager.KEY_RTT_SUPPORTED_BOOL);
+        boolean isRttUiSettingEnabled = Settings.Secure.getInt(mContext.getContentResolver(),
+                Settings.Secure.RTT_CALLING_MODE, 0) != 0;
+        boolean isRttAlwaysOnCarrierConfig = getBooleanCarrierConfig(
+                CarrierConfigManager.KEY_IGNORE_RTT_MODE_SETTING_BOOL);
 
-        boolean isActiveSubscriptionPresent = isActiveSubscriptionPresent();
+        boolean shouldImsRttBeOn = isRttUiSettingEnabled || isRttAlwaysOnCarrierConfig;
+        logi("update RTT: settings value: " + isRttUiSettingEnabled + " always-on carrierconfig: "
+                + isRttAlwaysOnCarrierConfig);
 
-        logi("update RTT: is carrier enabled: "
-                + isCarrierSupported + "; is active sub present: "
-                + isActiveSubscriptionPresent);
-
-        if (isCarrierSupported || !isActiveSubscriptionPresent) {
-            setRttConfig(true);
-            return true;
+        if (isCarrierSupported) {
+            setRttConfig(shouldImsRttBeOn);
         }
-        return false;
+        return isCarrierSupported && shouldImsRttBeOn;
     }
 
     private void setRttConfig(boolean enabled) {
@@ -2257,10 +2277,7 @@ public class ImsManager implements IFeatureConnector {
     }
 
     /**
-     * Binds the IMS service to make/receive the call. Supports two methods of exposing an
-     * ImsService:
-     * 1) com.android.ims.ImsService implementation in ServiceManager (deprecated).
-     * 2) android.telephony.ims.ImsService implementation through ImsResolver.
+     * Creates a connection to the ImsService associated with this slot.
      */
     private void createImsService() {
         mMmTelFeatureConnection = MmTelFeatureConnection.create(mContext, mPhoneId);
@@ -2590,6 +2607,11 @@ public class ImsManager implements IFeatureConnector {
             SubscriptionManager.setSubscriptionProperty(subId,
                     SubscriptionManager.VT_IMS_ENABLED,
                     Integer.toString(SUB_PROPERTY_NOT_INITIALIZED));
+
+            // Set RCS UCE to default
+            SubscriptionManager.setSubscriptionProperty(subId,
+                    SubscriptionManager.IMS_RCS_UCE_ENABLED, Integer.toString(
+                            SUBINFO_PROPERTY_FALSE));
         } else {
             loge("factoryReset: invalid sub id, can not reset siminfo db settings; subId=" + subId);
         }
@@ -2619,13 +2641,25 @@ public class ImsManager implements IFeatureConnector {
                 provisionStatus);
     }
 
+    public void setEabProvisioned(boolean isProvisioned) {
+        int provisionStatus = isProvisioned ? ProvisioningManager.PROVISIONING_VALUE_ENABLED :
+                ProvisioningManager.PROVISIONING_VALUE_DISABLED;
+        setProvisionedBoolNoException(ImsConfig.ConfigConstants.EAB_SETTING_ENABLED,
+                provisionStatus);
+    }
+
     private boolean isDataEnabled() {
-        return new TelephonyManager(mContext, getSubId()).isDataCapable();
+        return new TelephonyManager(mContext, getSubId()).isDataConnectionAllowed();
     }
 
     private boolean isVolteProvisioned() {
         return getProvisionedBoolNoException(
                 ImsConfig.ConfigConstants.VLT_SETTING_ENABLED);
+    }
+
+    private boolean isEabProvisioned() {
+        return getProvisionedBoolNoException(
+                ImsConfig.ConfigConstants.EAB_SETTING_ENABLED);
     }
 
     private boolean isWfcProvisioned() {
@@ -2666,7 +2700,8 @@ public class ImsManager implements IFeatureConnector {
 
         pw.println("  isWfcEnabledByPlatform = " + isWfcEnabledByPlatform());
         pw.println("  isWfcEnabledByUser = " + isWfcEnabledByUser());
-        pw.println("  getWfcMode = " + getWfcMode());
+        pw.println("  getWfcMode(non-roaming) = " + getWfcMode(false));
+        pw.println("  getWfcMode(roaming) = " + getWfcMode(true));
         pw.println("  isWfcRoamingEnabledByUser = " + isWfcRoamingEnabledByUser());
 
         pw.println("  isVtProvisionedOnDevice = " + isVtProvisionedOnDevice());
@@ -2683,12 +2718,6 @@ public class ImsManager implements IFeatureConnector {
     private boolean isSubIdValid(int subId) {
         return SubscriptionManager.isValidSubscriptionId(subId) &&
                 subId != SubscriptionManager.DEFAULT_SUBSCRIPTION_ID;
-    }
-
-    private boolean isActiveSubscriptionPresent() {
-        SubscriptionManager sm = (SubscriptionManager) mContext.getSystemService(
-                Context.TELEPHONY_SUBSCRIPTION_SERVICE);
-        return sm.getActiveSubscriptionIdList().length > 0;
     }
 
     private void updateImsCarrierConfigs(PersistableBundle configs) throws ImsException {

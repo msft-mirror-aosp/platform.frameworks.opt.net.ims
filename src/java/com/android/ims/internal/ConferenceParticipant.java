@@ -19,16 +19,14 @@ package com.android.ims.internal;
 import android.net.Uri;
 import android.os.Parcel;
 import android.os.Parcelable;
-import android.telecom.Call;
 import android.telecom.Connection;
-import android.telecom.ParcelableCall;
 import android.telecom.PhoneAccount;
 import android.telephony.PhoneNumberUtils;
-import android.telephony.Rlog;
 import android.text.TextUtils;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.telephony.PhoneConstants;
+import com.android.telephony.Rlog;
 
 /**
  * Parcelable representation of a participant's state in a conference call.
@@ -108,7 +106,7 @@ public class ConferenceParticipant implements Parcelable {
 
                 @Override
                 public ConferenceParticipant createFromParcel(Parcel source) {
-                    ClassLoader classLoader = ParcelableCall.class.getClassLoader();
+                    ClassLoader classLoader = ConferenceParticipant.class.getClassLoader();
                     Uri handle = source.readParcelable(classLoader);
                     String displayName = source.readString();
                     Uri endpoint = source.readParcelable(classLoader);
@@ -281,17 +279,23 @@ public class ConferenceParticipant implements Parcelable {
     }
 
     /**
-     * @return The direction of the call (incoming/outgoing).
+     * @return The direction of the call (incoming/outgoing):
+     *         {@link android.telecom.Call.Details#DIRECTION_INCOMING} for incoming calls, or
+     *         {@link android.telecom.Call.Details#DIRECTION_OUTGOING} for outgoing calls.
      */
-    public @android.telecom.Call.Details.CallDirection int getCallDirection() {
+    public int getCallDirection() {
         return mCallDirection;
     }
 
     /**
      * Sets the direction of the call.
-     * @param callDirection Whether the call is incoming or outgoing.
+     * @param callDirection Whether the call is incoming or outgoing:
+     *                      {@link android.telecom.Call.Details#DIRECTION_INCOMING} for
+     *                      incoming calls, or
+     *                      {@link android.telecom.Call.Details#DIRECTION_OUTGOING} for
+     *                      outgoing calls.
      */
-    public void setCallDirection(@Call.Details.CallDirection int callDirection) {
+    public void setCallDirection(int callDirection) {
         mCallDirection = callDirection;
     }
 
