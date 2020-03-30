@@ -1402,17 +1402,21 @@ public class ImsManager implements IFeatureConnector {
      */
     private void updateVideoCallFeatureValue(CapabilityChangeRequest request) {
         boolean available = isVtEnabledByPlatform();
-        boolean enabled = isVtEnabledByUser();
+        boolean vtEnabled = isVtEnabledByUser();
+        boolean advancedEnabled = isEnhanced4gLteModeSettingEnabledByUser();
         boolean isNonTty = isNonTtyOrTtyOnVolteEnabled();
         boolean isDataEnabled = isDataEnabled();
         boolean ignoreDataEnabledChanged = getBooleanCarrierConfig(
                 CarrierConfigManager.KEY_IGNORE_DATA_ENABLED_CHANGED_FOR_VIDEO_CALLS);
         boolean isProvisioned = isVtProvisionedOnDevice();
-        boolean isFeatureOn = available && enabled && isNonTty && isProvisioned
-                && (ignoreDataEnabledChanged || isDataEnabled);
+        // TODO: Support carrier config setting about if VT settings should be associated with
+        //  advanced calling settings.
+        boolean isFeatureOn = available && vtEnabled && isNonTty && isProvisioned
+                && advancedEnabled && (ignoreDataEnabledChanged || isDataEnabled);
 
         log("updateVideoCallFeatureValue: available = " + available
-                + ", enabled = " + enabled
+                + ", vtenabled = " + vtEnabled
+                + ", advancedCallEnabled = " + advancedEnabled
                 + ", nonTTY = " + isNonTty
                 + ", data enabled = " + isDataEnabled
                 + ", provisioned = " + isProvisioned
@@ -2045,8 +2049,14 @@ public class ImsManager implements IFeatureConnector {
     }
 
     public boolean updateRttConfigValue() {
+        // If there's no active sub anywhere on the device, enable RTT on the modem so that
+        // the device can make an emergency call.
+
+        boolean isActiveSubscriptionPresent = isActiveSubscriptionPresent();
         boolean isCarrierSupported =
-                getBooleanCarrierConfig(CarrierConfigManager.KEY_RTT_SUPPORTED_BOOL);
+                getBooleanCarrierConfig(CarrierConfigManager.KEY_RTT_SUPPORTED_BOOL)
+                || !isActiveSubscriptionPresent;
+
         boolean isRttUiSettingEnabled = Settings.Secure.getInt(mContext.getContentResolver(),
                 Settings.Secure.RTT_CALLING_MODE, 0) != 0;
         boolean isRttAlwaysOnCarrierConfig = getBooleanCarrierConfig(
@@ -2054,7 +2064,8 @@ public class ImsManager implements IFeatureConnector {
 
         boolean shouldImsRttBeOn = isRttUiSettingEnabled || isRttAlwaysOnCarrierConfig;
         logi("update RTT: settings value: " + isRttUiSettingEnabled + " always-on carrierconfig: "
-                + isRttAlwaysOnCarrierConfig);
+                + isRttAlwaysOnCarrierConfig
+                + "isActiveSubscriptionPresent: " + isActiveSubscriptionPresent);
 
         if (isCarrierSupported) {
             setRttConfig(shouldImsRttBeOn);
@@ -2116,6 +2127,26 @@ public class ImsManager implements IFeatureConnector {
             logw("queryMmTelCapability: interrupted while waiting for response");
         }
         return false;
+    }
+
+    public boolean queryMmTelCapabilityStatus(
+            @MmTelFeature.MmTelCapabilities.MmTelCapability int capability,
+            @ImsRegistrationImplBase.ImsRegistrationTech int radioTech) throws ImsException {
+        checkAndThrowExceptionIfServiceUnavailable();
+
+        if (getRegistrationTech() != radioTech)
+            return false;
+
+        try {
+
+            MmTelFeature.MmTelCapabilities capabilities =
+                    mMmTelFeatureConnection.queryCapabilityStatus();
+
+            return capabilities.isCapable(capability);
+        } catch (RemoteException e) {
+            throw new ImsException("queryMmTelCapabilityStatus()", e,
+                    ImsReasonInfo.CODE_LOCAL_IMS_SERVICE_DOWN);
+        }
     }
 
     public void setRttEnabled(boolean enabled) {
@@ -2718,6 +2749,12 @@ public class ImsManager implements IFeatureConnector {
     private boolean isSubIdValid(int subId) {
         return SubscriptionManager.isValidSubscriptionId(subId) &&
                 subId != SubscriptionManager.DEFAULT_SUBSCRIPTION_ID;
+    }
+
+    private boolean isActiveSubscriptionPresent() {
+        SubscriptionManager sm = (SubscriptionManager) mContext.getSystemService(
+                Context.TELEPHONY_SUBSCRIPTION_SERVICE);
+        return sm.getActiveSubscriptionIdList().length > 0;
     }
 
     private void updateImsCarrierConfigs(PersistableBundle configs) throws ImsException {
