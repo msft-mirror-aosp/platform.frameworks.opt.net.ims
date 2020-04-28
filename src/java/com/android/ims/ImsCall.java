@@ -16,7 +16,12 @@
 
 package com.android.ims;
 
-import android.annotation.UnsupportedAppUsage;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map.Entry;
+import java.util.Set;
+
 import android.content.Context;
 import android.net.Uri;
 import android.os.Bundle;
@@ -25,11 +30,13 @@ import android.os.Parcel;
 import android.telecom.Call;
 import android.telecom.ConferenceParticipant;
 import android.telecom.Connection;
-import android.telephony.CallQuality;
 import android.telephony.Rlog;
+import java.util.Objects;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import android.telephony.CallQuality;
 import android.telephony.ServiceState;
 import android.telephony.ims.ImsCallProfile;
-import android.telephony.ims.ImsCallSession;
 import android.telephony.ims.ImsConferenceState;
 import android.telephony.ims.ImsReasonInfo;
 import android.telephony.ims.ImsStreamMediaProfile;
@@ -37,16 +44,9 @@ import android.telephony.ims.ImsSuppServiceNotification;
 import android.util.Log;
 
 import com.android.ims.internal.ICall;
+import android.telephony.ims.ImsCallSession;
 import com.android.ims.internal.ImsStreamMediaSession;
 import com.android.internal.annotations.VisibleForTesting;
-
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map.Entry;
-import java.util.Objects;
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Handles an IMS voice / video call over LTE. You can instantiate this class with
@@ -937,7 +937,6 @@ public class ImsCall implements ICall {
      *
      * @return {@code True} if the call is a multiparty call.
      */
-    @UnsupportedAppUsage
     public boolean isMultiparty() {
         synchronized(mLockObj) {
             if (mSession == null) {
@@ -1201,7 +1200,6 @@ public class ImsCall implements ICall {
      * @param number number to be deflected to.
      * @throws ImsException if the IMS service fails to deflect the call
      */
-    @UnsupportedAppUsage
     public void deflect(String number) throws ImsException {
         logi("deflect :: session=" + mSession + ", number=" + Rlog.pii(TAG, number));
 
@@ -1227,7 +1225,6 @@ public class ImsCall implements ICall {
      * @see Listener#onCallStartFailed
      * @throws ImsException if the IMS service fails to reject the call
      */
-    @UnsupportedAppUsage
     public void reject(int reason) throws ImsException {
         logi("reject :: reason=" + reason);
 
@@ -1262,7 +1259,6 @@ public class ImsCall implements ICall {
      *
      * @param reason reason code to terminate a call
      */
-    @UnsupportedAppUsage
     public void terminate(int reason) {
         logi("terminate :: reason=" + reason);
 
@@ -1754,14 +1750,6 @@ public class ImsCall implements ICall {
     @VisibleForTesting
     public ImsCallSessionListenerProxy getImsCallSessionListenerProxy() {
         return mImsCallSessionListenerProxy;
-    }
-
-    /**
-     * @return the current Listener.  NOTE: ONLY FOR USE WITH TESTING.
-     */
-    @VisibleForTesting
-    public Listener getListener() {
-        return mListener;
     }
 
     private ImsCall createNewCall(ImsCallSession session, ImsCallProfile profile) {
@@ -2458,7 +2446,6 @@ public class ImsCall implements ICall {
                     return;
                 }
 
-                mHold = true;
                 mUpdateRequest = UPDATE_NONE;
                 listener = mListener;
             }
@@ -3500,11 +3487,10 @@ public class ImsCall implements ICall {
         sb.append(isOnHold() ? "Y" : "N");
         sb.append(" mute:");
         sb.append(isMuted() ? "Y" : "N");
-        ImsCallProfile imsCallProfile = mCallProfile;
-        if (imsCallProfile != null) {
-            sb.append(" mCallProfile:" + imsCallProfile);
+        if (mCallProfile != null) {
+            sb.append(" mCallProfile:" + mCallProfile);
             sb.append(" tech:");
-            sb.append(imsCallProfile.getCallExtra(ImsCallProfile.EXTRA_CALL_RAT_TYPE));
+            sb.append(mCallProfile.getCallExtra(ImsCallProfile.EXTRA_CALL_RAT_TYPE));
         }
         sb.append(" updateRequest:");
         sb.append(updateRequestToString(mUpdateRequest));

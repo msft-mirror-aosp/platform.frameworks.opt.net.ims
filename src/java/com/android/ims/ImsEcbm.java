@@ -29,7 +29,6 @@
 
 package com.android.ims;
 
-import android.annotation.UnsupportedAppUsage;
 import android.os.RemoteException;
 import android.telephony.Rlog;
 import android.telephony.ims.ImsReasonInfo;
@@ -64,7 +63,6 @@ public class ImsEcbm {
         }
     }
 
-    @UnsupportedAppUsage
     public void exitEmergencyCallbackMode() throws ImsException {
         try {
             miEcbm.exitEmergencyCallbackMode();

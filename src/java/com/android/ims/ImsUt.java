@@ -31,11 +31,9 @@ import android.telephony.ims.ImsCallForwardInfo;
 import android.telephony.ims.ImsReasonInfo;
 import android.telephony.ims.ImsSsData;
 import android.telephony.ims.ImsSsInfo;
-import android.telephony.ims.ImsUtListener;
 
 import com.android.ims.internal.IImsUt;
 import com.android.ims.internal.IImsUtListener;
-import com.android.internal.annotations.VisibleForTesting;
 
 /**
  * Provides APIs for the supplementary service settings using IMS (Ut interface).
@@ -647,8 +645,7 @@ public class ImsUt implements ImsUtInterface {
     /**
      * A listener type for the result of the supplementary service configuration.
      */
-    @VisibleForTesting
-    public class IImsUtListenerProxy extends IImsUtListener.Stub {
+    private class IImsUtListenerProxy extends IImsUtListener.Stub {
         /**
          * Notifies the result of the supplementary service configuration udpate.
          */
@@ -675,34 +672,13 @@ public class ImsUt implements ImsUtInterface {
         /**
          * Notifies the result of the supplementary service configuration query.
          */
-        // API Deprecated, internally use new API to process query result.
         @Override
         public void utConfigurationQueried(IImsUt ut, int id, Bundle ssInfo) {
-            int[] clirResponse = ssInfo.getIntArray(ImsUtListener.BUNDLE_KEY_CLIR);
-            if (clirResponse != null && clirResponse.length == 2) {
-                // Deprecated functionality does not use status, set as NOT_REGISTERED.
-                ImsSsInfo info = new ImsSsInfo.Builder(ImsSsInfo.NOT_REGISTERED)
-                        .setClirOutgoingState(clirResponse[0])
-                        .setClirInterrogationStatus(clirResponse[1]).build();
-                lineIdentificationSupplementaryServiceResponse(id, info);
-                return;
-            }
-            ImsSsInfo info = ssInfo.getParcelable(ImsUtListener.BUNDLE_KEY_SSINFO);
-            if (info != null) {
-                lineIdentificationSupplementaryServiceResponse(id, info);
-                return;
-            }
-            Rlog.w(TAG, "Invalid utConfigurationQueried response received for Bundle " + ssInfo);
-        }
+            Integer key = Integer.valueOf(id);
 
-        /**
-         * Notifies the result of a line identification supplementary service query.
-         */
-        @Override
-        public void lineIdentificationSupplementaryServiceResponse(int id, ImsSsInfo config) {
             synchronized(mLockObj) {
-                sendSuccessReport(mPendingCmds.get(id), config);
-                mPendingCmds.remove(id);
+                sendSuccessReport(mPendingCmds.get(key), ssInfo);
+                mPendingCmds.remove(key);
             }
         }
 
