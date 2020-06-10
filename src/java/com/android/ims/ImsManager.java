@@ -210,7 +210,8 @@ public class ImsManager implements IFeatureConnector {
         void executeRunnable(Runnable runnable);
     }
 
-    private static class ImsExecutorFactory implements ExecutorFactory {
+    @VisibleForTesting
+    public static class ImsExecutorFactory implements ExecutorFactory {
 
         private final HandlerThread mThreadHandler;
         private final Handler mHandler;
@@ -224,6 +225,10 @@ public class ImsManager implements IFeatureConnector {
         @Override
         public void executeRunnable(Runnable runnable) {
             mHandler.post(runnable);
+        }
+
+        public void destroy() {
+            mThreadHandler.quit();
         }
     }
 
@@ -1334,7 +1339,10 @@ public class ImsManager implements IFeatureConnector {
                 updateVolteFeatureValue(request);
                 updateWfcFeatureAndProvisionedValues(request);
                 updateVideoCallFeatureValue(request);
-                boolean isImsNeededForRtt = updateRttConfigValue();
+                // Only turn on IMS for RTT if there's an active subscription present. If not, the
+                // modem will be in emergency-call-only mode and will use separate signaling to
+                // establish an RTT emergency call.
+                boolean isImsNeededForRtt = updateRttConfigValue() && isActiveSubscriptionPresent();
                 // Supplementary services over UT do not require IMS registration. Do not alter IMS
                 // registration based on UT.
                 updateUtFeatureValue(request);
@@ -2069,6 +2077,8 @@ public class ImsManager implements IFeatureConnector {
 
         if (isCarrierSupported) {
             setRttConfig(shouldImsRttBeOn);
+        } else {
+            setRttConfig(false);
         }
         return isCarrierSupported && shouldImsRttBeOn;
     }
