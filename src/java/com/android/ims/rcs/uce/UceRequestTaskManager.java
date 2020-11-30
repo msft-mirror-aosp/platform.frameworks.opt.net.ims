@@ -16,8 +16,10 @@
 
 package com.android.ims.rcs.uce;
 
+import android.content.Context;
 import android.net.Uri;
-import android.telephony.ims.RcsUceAdapter;
+import android.os.Looper;
+import android.telephony.ims.aidl.IRcsUceControllerCallback;
 
 import com.android.ims.rcs.uce.UceController.UceControllerCallback;
 
@@ -26,20 +28,37 @@ import java.util.List;
 /**
  * The interface of managing the capability request and the availability request.
  */
-public interface UceRequestTaskManager {
+public class UceRequestTaskManager {
+
+    private final Context mContext;
+    private final int mSubId;
+    private final Looper mLooper;
+
+    public UceRequestTaskManager(Context context, int subId, Looper looper) {
+        mContext = context;
+        mSubId = subId;
+        mLooper = looper;
+    }
+
     /**
      * Trigger the capability request task.
      */
-    void triggerCapabilityRequestTask(UceControllerCallback controller, List<Uri> uriList,
-            RcsUceAdapter.CapabilitiesCallback callback);
+    public void triggerCapabilityRequestTask(UceControllerCallback controller, List<Uri> uriList,
+            IRcsUceControllerCallback callback) {
+        // TODO: Implement this method
+    }
     /**
      * Trigger the availability request task.
      */
-    void triggerAvailabilityRequestTask(UceControllerCallback controller, Uri uri,
-            RcsUceAdapter.CapabilitiesCallback callback);
+    public void triggerAvailabilityRequestTask(UceControllerCallback controller, Uri uri,
+            IRcsUceControllerCallback callback) {
+        // TODO: Implement this method
+    }
 
     /**
      * Notify the task manager to destroy.
      */
-    void onDestroy();
+    public void onDestroy() {
+        // TODO: Implement this method
+    }
 }
