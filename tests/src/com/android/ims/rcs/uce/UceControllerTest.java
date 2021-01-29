@@ -16,42 +16,31 @@
 
 package com.android.ims.rcs.uce;
 
-import static junit.framework.Assert.assertEquals;
-import static junit.framework.Assert.assertNotNull;
-import static junit.framework.TestCase.fail;
-
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.anyList;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 
-import android.content.Context;
 import android.net.Uri;
-import android.os.AsyncResult;
-import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
-import android.os.Message;
 import android.telephony.ims.RcsUceAdapter;
-import android.telephony.ims.RcsUceAdapter.CapabilitiesCallback;
-import android.telephony.ims.aidl.IRcsUcePublishStateCallback;
+import android.telephony.ims.aidl.IOptionsRequestCallback;
+import android.telephony.ims.aidl.IRcsUceControllerCallback;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
 
 import com.android.ims.ImsTestBase;
 import com.android.ims.RcsFeatureManager;
-import com.android.ims.rcs.uce.CapabilityExchangeListenerAdapter.OptionsRequestCallback;
-import com.android.ims.rcs.uce.eab.EabCapabilityResult;
+import com.android.ims.rcs.uce.UceController.ServerState;
 import com.android.ims.rcs.uce.eab.EabController;
 import com.android.ims.rcs.uce.options.OptionsController;
 import com.android.ims.rcs.uce.presence.publish.PublishController;
 import com.android.ims.rcs.uce.presence.subscribe.SubscribeController;
+import com.android.ims.rcs.uce.request.UceRequestManager;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -60,8 +49,6 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.ArgumentCaptor;
-import org.mockito.Captor;
 import org.mockito.Mock;
 
 @RunWith(AndroidJUnit4.class)
@@ -73,13 +60,14 @@ public class UceControllerTest extends ImsTestBase {
     @Mock OptionsController mOptionsController;
     @Mock UceController.ControllerFactory mControllerFactory;
 
-    @Mock UceRequestTaskManager mTaskManager;
-    @Mock UceController.RequestTaskManagerFactory mTaskManagerFactory;
+    @Mock UceRequestManager mTaskManager;
+    @Mock UceController.RequestManagerFactory mTaskManagerFactory;
 
+    @Mock UceController.ServerState mServerState;
     @Mock RcsFeatureManager mFeatureManager;
     @Mock UceController.UceControllerCallback mCallback;
-    @Mock CapabilitiesCallback mCapabilitiesCallback;
-    @Mock OptionsRequestCallback mOptionsRequestCallback;
+    @Mock IRcsUceControllerCallback mCapabilitiesCallback;
+    @Mock IOptionsRequestCallback mOptionsRequestCallback;
 
     private int mSubId = 1;
 
@@ -91,10 +79,11 @@ public class UceControllerTest extends ImsTestBase {
         doReturn(mPublishController).when(mControllerFactory).createPublishController(any(),
                 eq(mSubId), any(), any());
         doReturn(mSubscribeController).when(mControllerFactory).createSubscribeController(any(),
-                eq(mSubId), any(), any());
+                eq(mSubId));
         doReturn(mOptionsController).when(mControllerFactory).createOptionsController(any(),
                 eq(mSubId), any(), any());
-        doReturn(mTaskManager).when(mTaskManagerFactory).createTaskManager(any(), eq(mSubId), any());
+        doReturn(mTaskManager).when(mTaskManagerFactory).createRequestManager(any(), eq(mSubId),
+                any(), any());
     }
 
     @After
@@ -113,6 +102,7 @@ public class UceControllerTest extends ImsTestBase {
         verify(mPublishController).onRcsConnected(mFeatureManager);
         verify(mSubscribeController).onRcsConnected(mFeatureManager);
         verify(mOptionsController).onRcsConnected(mFeatureManager);
+        verify(mFeatureManager).addCapabilityEventCallback(any());
     }
 
     @Test
@@ -123,6 +113,7 @@ public class UceControllerTest extends ImsTestBase {
 
         uceController.onRcsDisconnected();
 
+        verify(mFeatureManager).removeCapabilityEventCallback(any());
         verify(mEabController).onRcsDisconnected();
         verify(mPublishController).onRcsDisconnected();
         verify(mSubscribeController).onRcsDisconnected();
@@ -152,8 +143,26 @@ public class UceControllerTest extends ImsTestBase {
         List<Uri> uriList = new ArrayList<>();
         uceController.requestCapabilities(uriList, mCapabilitiesCallback);
 
-        verify(mCapabilitiesCallback).onError(RcsUceAdapter.ERROR_GENERIC_FAILURE);
-        verify(mTaskManager, never()).triggerCapabilityRequestTask(any(), any(), any());
+        verify(mCapabilitiesCallback).onError(RcsUceAdapter.ERROR_GENERIC_FAILURE, 0L);
+        verify(mTaskManager, never()).sendCapabilityRequest(any(), eq(false), any());
+    }
+
+    @Test
+    @SmallTest
+    public void testRequestCapabilitiesWithForbidden() throws Exception {
+        UceController uceController = createUceController();
+        uceController.onRcsConnected(mFeatureManager);
+        long retryAfter = 5000L;
+        doReturn(true).when(mServerState).isRequestForbidden();
+        doReturn(retryAfter).when(mServerState).getRetryAfterMillis();
+        doReturn(RcsUceAdapter.ERROR_FORBIDDEN).when(mServerState).getForbiddenErrorCode();
+
+        List<Uri> uriList = new ArrayList<>();
+        uriList.add(Uri.fromParts("sip", "test", null));
+        uceController.requestCapabilities(uriList, mCapabilitiesCallback);
+
+        verify(mCapabilitiesCallback).onError(RcsUceAdapter.ERROR_FORBIDDEN, retryAfter);
+        verify(mTaskManager, never()).sendCapabilityRequest(any(), eq(false), any());
     }
 
     @Test
@@ -161,12 +170,13 @@ public class UceControllerTest extends ImsTestBase {
     public void testRequestCapabilitiesWithRcsConnected() throws Exception {
         UceController uceController = createUceController();
         uceController.onRcsConnected(mFeatureManager);
+        doReturn(null).when(mServerState).getForbiddenErrorCode();
 
         List<Uri> uriList = new ArrayList<>();
+        uriList.add(Uri.fromParts("sip", "test", null));
         uceController.requestCapabilities(uriList, mCapabilitiesCallback);
 
-        verify(mTaskManager).triggerCapabilityRequestTask(mCallback, uriList,
-                mCapabilitiesCallback);
+        verify(mTaskManager).sendCapabilityRequest(uriList, false, mCapabilitiesCallback);
     }
 
     @Test
@@ -178,8 +188,25 @@ public class UceControllerTest extends ImsTestBase {
         Uri contact = Uri.fromParts("sip", "test", null);
         uceController.requestAvailability(contact, mCapabilitiesCallback);
 
-        verify(mCapabilitiesCallback).onError(RcsUceAdapter.ERROR_GENERIC_FAILURE);
-        verify(mTaskManager, never()).triggerAvailabilityRequestTask(any(), any(), any());
+        verify(mCapabilitiesCallback).onError(RcsUceAdapter.ERROR_GENERIC_FAILURE, 0L);
+        verify(mTaskManager, never()).sendAvailabilityRequest(any(), any());
+    }
+
+    @Test
+    @SmallTest
+    public void testRequestAvailabilityWithForbidden() throws Exception {
+        UceController uceController = createUceController();
+        uceController.onRcsConnected(mFeatureManager);
+        long retryAfter = 5000L;
+        doReturn(true).when(mServerState).isRequestForbidden();
+        doReturn(retryAfter).when(mServerState).getRetryAfterMillis();
+        doReturn(RcsUceAdapter.ERROR_FORBIDDEN).when(mServerState).getForbiddenErrorCode();
+
+        Uri contact = Uri.fromParts("sip", "test", null);
+        uceController.requestAvailability(contact, mCapabilitiesCallback);
+
+        verify(mCapabilitiesCallback).onError(RcsUceAdapter.ERROR_FORBIDDEN, retryAfter);
+        verify(mTaskManager, never()).sendCapabilityRequest(any(), eq(false), any());
     }
 
     @Test
@@ -187,12 +214,12 @@ public class UceControllerTest extends ImsTestBase {
     public void testRequestAvailabilityWithRcsConnected() throws Exception {
         UceController uceController = createUceController();
         uceController.onRcsConnected(mFeatureManager);
+        doReturn(null).when(mServerState).getForbiddenErrorCode();
 
         Uri contact = Uri.fromParts("sip", "test", null);
         uceController.requestAvailability(contact, mCapabilitiesCallback);
 
-        verify(mTaskManager).triggerAvailabilityRequestTask(mCallback, contact,
-                mCapabilitiesCallback);
+        verify(mTaskManager).sendAvailabilityRequest(contact, mCapabilitiesCallback);
     }
 
     @Test
@@ -200,9 +227,10 @@ public class UceControllerTest extends ImsTestBase {
     public void TestRequestPublishCapabilitiesFromService() throws Exception {
         UceController uceController = createUceController();
 
-        uceController.onRequestPublishCapabilitiesFromService(anyInt());
+        int triggerType = RcsUceAdapter.CAPABILITY_UPDATE_TRIGGER_MOVE_TO_WLAN;
+        uceController.onRequestPublishCapabilitiesFromService(triggerType);
 
-        verify(mPublishController).publishCapabilities(anyInt());
+        verify(mPublishController).requestPublishCapabilitiesFromService(triggerType);
     }
 
     @Test
@@ -213,6 +241,20 @@ public class UceControllerTest extends ImsTestBase {
         uceController.onUnpublish();
 
         verify(mPublishController).onUnpublish();
+    }
+
+    @Test
+    @SmallTest
+    public void testRetrieveOptionsCapabilities() {
+        UceController uceController = createUceController();
+
+        Uri contact = Uri.fromParts("sip", "test", null);
+        List<String> capabilities = new ArrayList<>();
+        uceController.retrieveOptionsCapabilitiesForRemote(contact, capabilities,
+                mOptionsRequestCallback);
+
+        verify(mOptionsController).retrieveCapabilitiesForRemote(contact, capabilities,
+                mOptionsRequestCallback);
     }
 
     @Test
@@ -247,21 +289,29 @@ public class UceControllerTest extends ImsTestBase {
 
     @Test
     @SmallTest
-    public void testRetrieveOptionsCapabilities() {
-        UceController uceController = createUceController();
+    public void testUceRequestForbid() {
+        ServerState testServerState = new ServerState();
+        UceController uceController = createUceController(testServerState);
+        boolean isForbidden = true;
+        long retryAfter = 3000L;
+        int errorCode = RcsUceAdapter.ERROR_NOT_AUTHORIZED;
 
-        Uri contact = Uri.fromParts("sip", "test", null);
-        List<String> capabilities = new ArrayList<>();
-        uceController.retrieveOptionsCapabilitiesForRemote(contact, capabilities,
-                mOptionsRequestCallback);
+        testServerState.updateRequestForbidden(isForbidden, errorCode, retryAfter);
+        Integer resultErrorCode = testServerState.getForbiddenErrorCode();
 
-        verify(mOptionsController).retrieveCapabilitiesForRemote(contact, capabilities,
-                mOptionsRequestCallback);
+        assertEquals(errorCode, resultErrorCode.intValue());
     }
 
     private UceController createUceController() {
-        UceController uceController = new UceController(mContext, mSubId, mControllerFactory,
-                mTaskManagerFactory);
+        UceController uceController = new UceController(mContext, mSubId, mServerState,
+                mControllerFactory, mTaskManagerFactory);
+        uceController.setUceControllerCallback(mCallback);
+        return uceController;
+    }
+
+    private UceController createUceController(ServerState serverState) {
+        UceController uceController = new UceController(mContext, mSubId, serverState,
+                mControllerFactory, mTaskManagerFactory);
         uceController.setUceControllerCallback(mCallback);
         return uceController;
     }

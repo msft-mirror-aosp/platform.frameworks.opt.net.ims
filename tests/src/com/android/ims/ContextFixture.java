@@ -24,7 +24,11 @@ import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 
+import android.content.BroadcastReceiver;
+import android.content.ContentResolver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.content.res.Resources;
 import android.net.ConnectivityManager;
@@ -33,24 +37,30 @@ import android.telecom.TelecomManager;
 import android.telephony.CarrierConfigManager;
 import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyManager;
+import android.telephony.ims.ImsManager;
+import android.test.mock.MockContentResolver;
 import android.test.mock.MockContext;
 
 import org.mockito.stubbing.Answer;
 
 import java.util.HashSet;
+import java.util.concurrent.Executor;
 
 public class ContextFixture {
 
     private final Context mContext = spy(new FakeContext());
 
     private final TelephonyManager mTelephonyManager = mock(TelephonyManager.class);
+    private final ConnectivityManager mConnectivityManager = mock(ConnectivityManager.class);
     private final CarrierConfigManager mCarrierConfigManager = mock(CarrierConfigManager.class);
     private final PackageManager mPackageManager = mock(PackageManager.class);
     private final SubscriptionManager mSubscriptionManager = mock(SubscriptionManager.class);
+    private final ImsManager mImsManager = mock(ImsManager.class);
     private final Resources mResources = mock(Resources.class);
 
     private final PersistableBundle mBundle = new PersistableBundle();
     private final HashSet<String> mSystemFeatures = new HashSet<>();
+    private final MockContentResolver mMockContentResolver = new MockContentResolver();
 
     public ContextFixture() throws Exception {
         doReturn(mBundle).when(mCarrierConfigManager).getConfigForSubId(anyInt());
@@ -84,8 +94,12 @@ public class ContextFixture {
                     return mTelephonyManager;
                 case Context.CARRIER_CONFIG_SERVICE:
                     return mCarrierConfigManager;
+                case Context.CONNECTIVITY_SERVICE:
+                    return mConnectivityManager;
                 case Context.TELEPHONY_SUBSCRIPTION_SERVICE:
                     return mSubscriptionManager;
+                case Context.TELEPHONY_IMS_SERVICE:
+                    return mImsManager;
                 default:
                     return null;
             }
@@ -101,10 +115,32 @@ public class ContextFixture {
                 return Context.CONNECTIVITY_SERVICE;
             } else if (serviceClass == TelephonyManager.class) {
                 return Context.TELEPHONY_SERVICE;
+            } else if (serviceClass == ImsManager.class) {
+                return Context.TELEPHONY_IMS_SERVICE;
+            } else if (serviceClass == CarrierConfigManager.class) {
+                return Context.CARRIER_CONFIG_SERVICE;
             }
             return super.getSystemServiceName(serviceClass);
         }
 
+        @Override
+        public Intent registerReceiver(BroadcastReceiver receiver, IntentFilter filter) {
+            return null;
+        }
+
+        @Override
+        public void unregisterReceiver(BroadcastReceiver receiver) {
+        }
+
+        @Override
+        public ContentResolver getContentResolver() {
+            return mMockContentResolver;
+        }
+
+        @Override
+        public Executor getMainExecutor() {
+            return Runnable::run;
+        }
     }
 
     public Context getContext() {
