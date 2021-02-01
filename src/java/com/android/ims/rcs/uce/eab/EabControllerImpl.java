@@ -18,6 +18,7 @@ package com.android.ims.rcs.uce.eab;
 
 import static android.telephony.ims.RcsContactUceCapability.CAPABILITY_MECHANISM_OPTIONS;
 import static android.telephony.ims.RcsContactUceCapability.CAPABILITY_MECHANISM_PRESENCE;
+import static android.telephony.ims.RcsContactUceCapability.SOURCE_TYPE_CACHED;
 
 import android.annotation.NonNull;
 import android.content.ContentValues;
@@ -31,9 +32,10 @@ import android.telephony.ims.RcsContactPresenceTuple.ServiceCapabilities;
 import android.telephony.ims.RcsContactUceCapability;
 import android.telephony.ims.RcsContactUceCapability.OptionsBuilder;
 import android.telephony.ims.RcsContactUceCapability.PresenceBuilder;
-import android.telephony.ims.RcsContactUceCapability.RcsUcsCapabilityBuilder;
 import android.text.TextUtils;
+import android.text.format.Time;
 import android.util.Log;
+import android.util.TimeFormatException;
 
 import com.android.ims.RcsFeatureManager;
 import com.android.ims.rcs.uce.UceController.UceControllerCallback;
@@ -41,6 +43,7 @@ import com.android.ims.rcs.uce.UceController.UceControllerCallback;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.GregorianCalendar;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Predicate;
@@ -57,15 +60,20 @@ public class EabControllerImpl implements EabController {
 
     private final Context mContext;
     private final int mSubId;
+    private final EabBulkCapabilityUpdater mEabBulkCapabilityUpdater;
+
     private UceControllerCallback mUceControllerCallback;
-    private final Looper mLooper;
     private volatile boolean mIsSetDestroyedFlag = false;
 
     public EabControllerImpl(Context context, int subId, UceControllerCallback c, Looper looper) {
         mContext = context;
         mSubId = subId;
         mUceControllerCallback = c;
-        mLooper = looper;
+        mEabBulkCapabilityUpdater = new EabBulkCapabilityUpdater(mContext, mSubId,
+                this,
+                new EabContactSyncController(),
+                mUceControllerCallback,
+                looper);
     }
 
     @Override
@@ -80,6 +88,7 @@ public class EabControllerImpl implements EabController {
     public void onDestroy() {
         Log.d(TAG, "onDestroy");
         mIsSetDestroyedFlag = true;
+        mEabBulkCapabilityUpdater.onDestroy();
     }
 
     /**
@@ -93,6 +102,7 @@ public class EabControllerImpl implements EabController {
             return;
         }
         mUceControllerCallback = c;
+        mEabBulkCapabilityUpdater.setUceRequestCallback(c);
     }
 
     /**
@@ -142,13 +152,15 @@ public class EabControllerImpl implements EabController {
             Log.d(TAG, "EabController destroyed.");
             return;
         }
+
         Log.d(TAG, "Save capabilities: " + contactCapabilities.size());
 
         // Update the capabilities
         for (RcsContactUceCapability capability : contactCapabilities) {
             String phoneNumber = getNumberFromUri(capability.getContactUri());
             Cursor c = mContext.getContentResolver().query(
-                    EabProvider.CONTACT_URI, null, EabProvider.ContactColumns.PHONE_NUMBER + "=?",
+                    EabProvider.CONTACT_URI, null,
+                    EabProvider.ContactColumns.PHONE_NUMBER + "=?",
                     new String[]{phoneNumber}, null);
 
             if (c != null && c.moveToNext()) {
@@ -176,6 +188,8 @@ public class EabControllerImpl implements EabController {
                 c.close();
             }
         }
+
+        mEabBulkCapabilityUpdater.updateExpiredTimeAlert();
     }
 
     private List<EabCapabilityResult> generateDestroyedResult(List<Uri> contactUri) {
@@ -191,7 +205,7 @@ public class EabControllerImpl implements EabController {
 
     private EabCapabilityResult generateEabResult(Uri contactUri,
             Predicate<Cursor> isExpiredMethod) {
-        RcsContactUceCapability.RcsUcsCapabilityBuilder builder = null;
+        RcsUceCapabilityBuilderWrapper builder = null;
         EabCapabilityResult result;
 
         // query EAB provider
@@ -201,29 +215,37 @@ public class EabControllerImpl implements EabController {
         Cursor cursor = mContext.getContentResolver().query(
                 queryUri, null, null, null, null);
 
-        boolean isExpired = false;
         if (cursor != null && cursor.getCount() != 0) {
             while (cursor.moveToNext()) {
+                if (isExpiredMethod.test(cursor)) {
+                    continue;
+                }
+
                 if (builder == null) {
                     builder = createNewBuilder(contactUri, cursor);
                 } else {
                     updateCapability(contactUri, cursor, builder);
                 }
-                if (isExpiredMethod.test(cursor)) {
-                    isExpired = true;
-                    break;
-                }
             }
             cursor.close();
 
-            if (isExpired) {
+            if (builder == null) {
                 result = new EabCapabilityResult(contactUri,
                         EabCapabilityResult.EAB_CONTACT_EXPIRED_FAILURE,
                         null);
             } else {
-                result = new EabCapabilityResult(contactUri,
-                        EabCapabilityResult.EAB_QUERY_SUCCESSFUL,
-                        builder.build());
+                if (builder.getMechanism() == CAPABILITY_MECHANISM_PRESENCE) {
+                    PresenceBuilder presenceBuilder = builder.getPresenceBuilder();
+                    result = new EabCapabilityResult(contactUri,
+                            EabCapabilityResult.EAB_QUERY_SUCCESSFUL,
+                            presenceBuilder.build());
+                } else {
+                    OptionsBuilder optionsBuilder = builder.getOptionsBuilder();
+                    result = new EabCapabilityResult(contactUri,
+                            EabCapabilityResult.EAB_QUERY_SUCCESSFUL,
+                            optionsBuilder.build());
+                }
+
             }
         } else {
             result = new EabCapabilityResult(contactUri,
@@ -232,26 +254,36 @@ public class EabControllerImpl implements EabController {
         return result;
     }
 
-    private void updateCapability(Uri contactUri, Cursor cursor, RcsUcsCapabilityBuilder builder) {
-        if (builder instanceof PresenceBuilder) {
-            ((PresenceBuilder) builder).addCapabilityTuple(createPresenceTuple(contactUri, cursor));
+    private void updateCapability(Uri contactUri, Cursor cursor,
+                RcsUceCapabilityBuilderWrapper builderWrapper) {
+        if (builderWrapper.getMechanism() == CAPABILITY_MECHANISM_PRESENCE) {
+            PresenceBuilder builder = builderWrapper.getPresenceBuilder();
+            if (builder != null) {
+                builder.addCapabilityTuple(createPresenceTuple(contactUri, cursor));
+            }
         } else {
-            ((OptionsBuilder) builder).addFeatureTag(createOptionTuple(cursor));
+            OptionsBuilder builder = builderWrapper.getOptionsBuilder();
+            if (builder != null) {
+                builder.addFeatureTag(createOptionTuple(cursor));
+            }
         }
     }
 
-    private RcsUcsCapabilityBuilder createNewBuilder(Uri contactUri, Cursor cursor) {
+    private RcsUceCapabilityBuilderWrapper createNewBuilder(Uri contactUri, Cursor cursor) {
         int mechanism = getIntValue(cursor, EabProvider.EabCommonColumns.MECHANISM);
         int result = getIntValue(cursor, EabProvider.EabCommonColumns.REQUEST_RESULT);
+        RcsUceCapabilityBuilderWrapper builderWrapper =
+                new RcsUceCapabilityBuilderWrapper(mechanism);
 
         if (mechanism == CAPABILITY_MECHANISM_PRESENCE) {
             PresenceBuilder builder = new PresenceBuilder(
-                    contactUri, CAPABILITY_MECHANISM_PRESENCE, result);
+                    contactUri, SOURCE_TYPE_CACHED, result);
             builder.addCapabilityTuple(createPresenceTuple(contactUri, cursor));
-            return builder;
+            builderWrapper.setPresenceBuilder(builder);
         } else {
-            return new OptionsBuilder(contactUri);
+            builderWrapper.setOptionsBuilder(new OptionsBuilder(contactUri));
         }
+        return builderWrapper;
     }
 
     private String createOptionTuple(Cursor cursor) {
@@ -268,10 +300,10 @@ public class EabControllerImpl implements EabController {
                 EabProvider.PresenceTupleColumns.REQUEST_TIMESTAMP);
 
         // ServiceCapabilities fields
-        String audioCapableStr = getStringValue(cursor,
-                EabProvider.PresenceTupleColumns.AUDIO_CAPABLE);
-        String videoCapableStr = getStringValue(cursor,
-                EabProvider.PresenceTupleColumns.VIDEO_CAPABLE);
+        boolean audioCapable = getIntValue(cursor,
+                EabProvider.PresenceTupleColumns.AUDIO_CAPABLE) == 1;
+        boolean videoCapable = getIntValue(cursor,
+                EabProvider.PresenceTupleColumns.VIDEO_CAPABLE) == 1;
         String duplexModes = getStringValue(cursor,
                 EabProvider.PresenceTupleColumns.DUPLEX_MODE);
         String unsupportedDuplexModes = getStringValue(cursor,
@@ -290,39 +322,34 @@ public class EabControllerImpl implements EabController {
         }
 
         // Create ServiceCapabilities
-        ServiceCapabilities serviceCapabilities = null;
-        if (!TextUtils.isEmpty(audioCapableStr)
-                || !TextUtils.isEmpty(videoCapableStr)
-                || !TextUtils.isEmpty(duplexModes)
+        ServiceCapabilities serviceCapabilities;
+        ServiceCapabilities.Builder serviceCapabilitiesBuilder =
+                new ServiceCapabilities.Builder(audioCapable, videoCapable);
+        if (!TextUtils.isEmpty(duplexModes)
                 || !TextUtils.isEmpty(unsupportedDuplexModes)) {
-            boolean audioCapable = Boolean.parseBoolean(audioCapableStr);
-            boolean videoCapable = Boolean.parseBoolean(videoCapableStr);
-
-            ServiceCapabilities.Builder serviceCapabilitiesBuilder =
-                    new ServiceCapabilities.Builder(audioCapable, videoCapable);
             for (String duplexMode : duplexModeList) {
                 serviceCapabilitiesBuilder.addSupportedDuplexMode(duplexMode);
             }
             for (String unsupportedDuplex : unsupportedDuplexModeList) {
                 serviceCapabilitiesBuilder.addUnsupportedDuplexMode(unsupportedDuplex);
             }
-            serviceCapabilities = serviceCapabilitiesBuilder.build();
         }
+        serviceCapabilities = serviceCapabilitiesBuilder.build();
 
         // Create RcsContactPresenceTuple
         RcsContactPresenceTuple.Builder rcsContactPresenceTupleBuilder =
                 new RcsContactPresenceTuple.Builder(status, serviceId, version);
         if (description != null) {
-            rcsContactPresenceTupleBuilder.addDescription(description);
+            rcsContactPresenceTupleBuilder.setServiceDescription(description);
         }
         if (contactUri != null) {
-            rcsContactPresenceTupleBuilder.addContactUri(contactUri);
+            rcsContactPresenceTupleBuilder.setContactUri(contactUri);
         }
         if (serviceCapabilities != null) {
-            rcsContactPresenceTupleBuilder.addServiceCapabilities(serviceCapabilities);
+            rcsContactPresenceTupleBuilder.setServiceCapabilities(serviceCapabilities);
         }
         if (timeStamp != null) {
-            rcsContactPresenceTupleBuilder.addTimeStamp(timeStamp);
+            rcsContactPresenceTupleBuilder.setTimestamp(timeStamp);
         }
 
         return rcsContactPresenceTupleBuilder.build();
@@ -335,7 +362,7 @@ public class EabControllerImpl implements EabController {
         if (requestTimeStamp != null) {
             Instant expiredTimestamp = Instant
                     .ofEpochSecond(Long.parseLong(requestTimeStamp))
-                    .plus(getCapabilityCacheExpiration(), ChronoUnit.SECONDS);
+                    .plus(getCapabilityCacheExpiration(mSubId), ChronoUnit.SECONDS);
             expired = expiredTimestamp.isBefore(Instant.now());
             Log.d(TAG, "Capability expiredTimestamp: "
                     + expiredTimestamp.getEpochSecond() + ", expired:" + expired);
@@ -352,7 +379,7 @@ public class EabControllerImpl implements EabController {
         if (requestTimeStamp != null) {
             Instant expiredTimestamp = Instant
                     .ofEpochSecond(Long.parseLong(requestTimeStamp))
-                    .plus(getAvailabilityCacheExpiration(), ChronoUnit.SECONDS);
+                    .plus(getAvailabilityCacheExpiration(mSubId), ChronoUnit.SECONDS);
             expired = expiredTimestamp.isBefore(Instant.now());
             Log.d(TAG, "Availability insertedTimestamp: "
                     + expiredTimestamp.getEpochSecond() + ", expired:" + expired);
@@ -375,10 +402,10 @@ public class EabControllerImpl implements EabController {
         return expiredTimestamp;
     }
 
-    private long getCapabilityCacheExpiration() {
+    protected static long getCapabilityCacheExpiration(int subId) {
         long value = -1;
         try {
-            ProvisioningManager pm = ProvisioningManager.createForSubscriptionId(mSubId);
+            ProvisioningManager pm = ProvisioningManager.createForSubscriptionId(subId);
             value = pm.getProvisioningIntValue(
                     ProvisioningManager.KEY_RCS_CAPABILITIES_CACHE_EXPIRATION_SEC);
         } catch (Exception ex) {
@@ -392,10 +419,10 @@ public class EabControllerImpl implements EabController {
         return value;
     }
 
-    private long getAvailabilityCacheExpiration() {
+    protected static long getAvailabilityCacheExpiration(int subId) {
         long value = -1;
         try {
-            ProvisioningManager pm = ProvisioningManager.createForSubscriptionId(mSubId);
+            ProvisioningManager pm = ProvisioningManager.createForSubscriptionId(subId);
             value = pm.getProvisioningIntValue(
                     ProvisioningManager.KEY_RCS_AVAILABILITY_CACHE_EXPIRATION_SEC);
         } catch (Exception ex) {
@@ -413,7 +440,7 @@ public class EabControllerImpl implements EabController {
         ContentValues contentValues = new ContentValues();
         contentValues.put(EabProvider.ContactColumns.PHONE_NUMBER, phoneNumber);
         Uri result = mContext.getContentResolver().insert(EabProvider.CONTACT_URI, contentValues);
-        return Integer.valueOf(result.getLastPathSegment());
+        return Integer.parseInt(result.getLastPathSegment());
     }
 
     private void deleteOldPresenceCapability(int id) {
@@ -424,10 +451,13 @@ public class EabControllerImpl implements EabController {
                 new String[]{String.valueOf(id)}, null);
 
         if (c != null && c.getCount() > 0) {
-            int commonId = c.getInt(c.getColumnIndex(EabProvider.EabCommonColumns._ID));
-            mContext.getContentResolver().delete(
-                    EabProvider.PRESENCE_URI, EabProvider.PresenceTupleColumns.EAB_COMMON_ID + "=?",
-                    new String[]{String.valueOf(commonId)});
+            while(c.moveToNext()) {
+                int commonId = c.getInt(c.getColumnIndex(EabProvider.EabCommonColumns._ID));
+                mContext.getContentResolver().delete(
+                        EabProvider.PRESENCE_URI,
+                        EabProvider.PresenceTupleColumns.EAB_COMMON_ID + "=?",
+                        new String[]{String.valueOf(commonId)});
+            }
         }
 
         if (c != null) {
@@ -443,34 +473,49 @@ public class EabControllerImpl implements EabController {
         contentValues.put(EabProvider.EabCommonColumns.REQUEST_RESULT,
                 capability.getRequestResult());
         Uri result = mContext.getContentResolver().insert(EabProvider.COMMON_URI, contentValues);
-        int commonId = Integer.valueOf(result.getLastPathSegment());
+        int commonId = Integer.parseInt(result.getLastPathSegment());
         Log.d(TAG, "Insert into common table. Id: " + commonId);
 
-        ContentValues[] presenceContent = new ContentValues[capability.getPresenceTuples().size()];
+        ContentValues[] presenceContent =
+                new ContentValues[capability.getCapabilityTuples().size()];
         for (int i = 0; i < presenceContent.length; i++) {
-            RcsContactPresenceTuple tuple = capability.getPresenceTuples().get(i);
+            RcsContactPresenceTuple tuple = capability.getCapabilityTuples().get(i);
 
             // Create new ServiceCapabilities
             ServiceCapabilities serviceCapabilities = tuple.getServiceCapabilities();
             String duplexMode = null, unsupportedDuplexMode = null;
             if (serviceCapabilities != null) {
                 List<String> duplexModes = serviceCapabilities.getSupportedDuplexModes();
-                if (duplexModes != null && duplexModes.size() != 0) {
+                if (duplexModes.size() != 0) {
                     duplexMode = TextUtils.join(",", duplexModes);
                 }
 
                 List<String> unsupportedDuplexModes =
-                        serviceCapabilities.getSupportedDuplexModes();
-                if (unsupportedDuplexModes != null && unsupportedDuplexModes.size() != 0) {
+                        serviceCapabilities.getUnsupportedDuplexModes();
+                if (unsupportedDuplexModes.size() != 0) {
                     unsupportedDuplexMode =
                             TextUtils.join(",", unsupportedDuplexModes);
                 }
             }
 
             // Using the current timestamp if the timestamp doesn't populate
-            String timeStamp = tuple.getTimestamp();
-            if (timeStamp == null) {
-                timeStamp = String.valueOf(Instant.now().getEpochSecond());
+            Long timestamp;
+            if (tuple.getTimestamp() != null) {
+                try {
+                    Time time = new Time();
+                    time.parse3339(tuple.getTimestamp());
+
+                    GregorianCalendar date = new GregorianCalendar(
+                            time.year, time.month, time.monthDay,
+                            time.hour, time.minute, time.second);
+                    timestamp = date.getTime().getTime() / 1000;
+                } catch (TimeFormatException ex) {
+                    Log.d(TAG, "Fail on parsing the timestamp. "
+                            + "Timestamp: " + tuple.getTimestamp());
+                    timestamp = Instant.now().getEpochSecond();
+                }
+            } else {
+                timestamp = Instant.now().getEpochSecond();
             }
 
             contentValues = new ContentValues();
@@ -481,7 +526,7 @@ public class EabControllerImpl implements EabController {
                     tuple.getServiceVersion());
             contentValues.put(EabProvider.PresenceTupleColumns.DESCRIPTION,
                     tuple.getServiceDescription());
-            contentValues.put(EabProvider.PresenceTupleColumns.REQUEST_TIMESTAMP, timeStamp);
+            contentValues.put(EabProvider.PresenceTupleColumns.REQUEST_TIMESTAMP, timestamp);
             contentValues.put(EabProvider.PresenceTupleColumns.CONTACT_URI,
                     tuple.getContactUri().toString());
             if (serviceCapabilities != null) {
@@ -508,10 +553,13 @@ public class EabControllerImpl implements EabController {
                 new String[]{String.valueOf(contactId)}, null);
 
         if (c != null && c.getCount() > 0) {
-            int commonId = c.getInt(c.getColumnIndex(EabProvider.EabCommonColumns._ID));
-            mContext.getContentResolver().delete(
-                    EabProvider.OPTIONS_URI, EabProvider.OptionsColumns.EAB_COMMON_ID + "=?",
-                    new String[]{String.valueOf(commonId)});
+            while(c.moveToNext()) {
+                int commonId = c.getInt(c.getColumnIndex(EabProvider.EabCommonColumns._ID));
+                mContext.getContentResolver().delete(
+                        EabProvider.OPTIONS_URI,
+                        EabProvider.OptionsColumns.EAB_COMMON_ID + "=?",
+                        new String[]{String.valueOf(commonId)});
+            }
         }
 
         if (c != null) {

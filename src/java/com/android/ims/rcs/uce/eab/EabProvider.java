@@ -16,6 +16,10 @@
 
 package com.android.ims.rcs.uce.eab;
 
+import static android.content.ContentResolver.NOTIFY_DELETE;
+import static android.content.ContentResolver.NOTIFY_INSERT;
+import static android.content.ContentResolver.NOTIFY_UPDATE;
+
 import android.content.ContentProvider;
 import android.content.ContentValues;
 import android.content.Context;
@@ -77,7 +81,7 @@ public class EabProvider extends ContentProvider {
     public static final String AUTHORITY = "eab";
 
     private static final String TAG = "EabProvider";
-    private static final int DATABASE_VERSION = 1;
+    private static final int DATABASE_VERSION = 2;
 
     private static final String EAB_CONTACT_TABLE_NAME = "eab_contact";
     private static final String EAB_COMMON_TABLE_NAME = "eab_common";
@@ -112,12 +116,12 @@ public class EabProvider extends ContentProvider {
 
             // join options table
             + " LEFT JOIN " + EAB_OPTIONS_TABLE_NAME
-            + " ON " + EAB_OPTIONS_TABLE_NAME + "." + EabCommonColumns._ID
+            + " ON " + EAB_COMMON_TABLE_NAME + "." + EabCommonColumns._ID
             + "=" + EAB_OPTIONS_TABLE_NAME + "." + OptionsColumns.EAB_COMMON_ID
 
             // join presence table
             + " LEFT JOIN " + EAB_PRESENCE_TUPLE_TABLE_NAME
-            + " ON " + EAB_PRESENCE_TUPLE_TABLE_NAME + "." + EabCommonColumns._ID
+            + " ON " + EAB_COMMON_TABLE_NAME + "." + EabCommonColumns._ID
             + "=" + EAB_PRESENCE_TUPLE_TABLE_NAME + "."
             + PresenceTupleColumns.EAB_COMMON_ID;
 
@@ -134,6 +138,15 @@ public class EabProvider extends ContentProvider {
          * <P>Type: TEXT</P>
          */
         public static final String PHONE_NUMBER = "phone_number";
+
+        /**
+         * The ID of contact that store in contact provider. It refer to the
+         * {@link android.provider.ContactsContract.Data#CONTACT_ID}. If the phone number not in
+         * contact provider, the value should be null.
+         *
+         * <P>Type: INTEGER</P>
+         */
+        public static final String CONTACT_ID = "contact_id";
 
         /**
          * The ID of contact that store in contact provider. It refer to the
@@ -267,7 +280,8 @@ public class EabProvider extends ContentProvider {
         public static final String UNSUPPORTED_DUPLEX_MODE = "unsupported_duplex_mode";
 
         /**
-         * The presence request timestamp.
+         * The presence request timestamp. Represents seconds of UTC time since Unix epoch
+         * 1970-01-01 00:00:00.
          * <P>Type:  LONG</P>
          */
         public static final String REQUEST_TIMESTAMP = "presence_request_timestamp";
@@ -328,6 +342,7 @@ public class EabProvider extends ContentProvider {
                 + " ("
                 + ContactColumns._ID + " INTEGER PRIMARY KEY, "
                 + ContactColumns.PHONE_NUMBER + " Text DEFAULT NULL, "
+                + ContactColumns.CONTACT_ID + " INTEGER DEFAULT -1, "
                 + ContactColumns.RAW_CONTACT_ID + " INTEGER DEFAULT -1, "
                 + ContactColumns.DATA_ID + " INTEGER DEFAULT -1, "
                 + "UNIQUE (" + TextUtils.join(", ", CONTACT_UNIQUE_FIELDS) + ")"
@@ -389,6 +404,12 @@ public class EabProvider extends ContentProvider {
         @Override
         public void onUpgrade(SQLiteDatabase sqLiteDatabase, int oldVersion, int newVersion) {
             Log.d(TAG, "DB upgrade from " + oldVersion + " to " + newVersion);
+
+            if (oldVersion < 2) {
+                sqLiteDatabase.execSQL("ALTER TABLE " + EAB_CONTACT_TABLE_NAME + " ADD COLUMN "
+                        + ContactColumns.CONTACT_ID + " INTEGER DEFAULT -1;");
+                oldVersion = 2;
+            }
         }
     }
 
@@ -479,7 +500,7 @@ public class EabProvider extends ContentProvider {
                 Log.d(TAG, "Query failed. Not support URL.");
                 return null;
         }
-        return qb.query(db, projection, selection, selectionArgs, null, null, null);
+        return qb.query(db, projection, selection, selectionArgs, null, null, sortOrder);
     }
 
     @Override
@@ -506,9 +527,13 @@ public class EabProvider extends ContentProvider {
             result = db.insertWithOnConflict(tableName, null, contentValues,
                     SQLiteDatabase.CONFLICT_REPLACE);
             Log.d(TAG, "Insert uri: " + match + " ID: " + result);
+            if (result > 0) {
+                getContext().getContentResolver().notifyChange(uri, null, NOTIFY_INSERT);
+            }
         } else {
             Log.d(TAG, "Insert. Not support URI.");
         }
+
         return Uri.withAppendedPath(uri, String.valueOf(result));
     }
 
@@ -552,6 +577,9 @@ public class EabProvider extends ContentProvider {
         } finally {
             db.endTransaction();
         }
+        if (result > 0) {
+            getContext().getContentResolver().notifyChange(uri, null, NOTIFY_INSERT);
+        }
         Log.d(TAG, "bulkInsert uri: " + match + " count: " + result);
         return result;
     }
@@ -578,6 +606,9 @@ public class EabProvider extends ContentProvider {
         }
         if (!TextUtils.isEmpty(tableName)) {
             result = db.delete(tableName, selection, selectionArgs);
+            if (result > 0) {
+                getContext().getContentResolver().notifyChange(uri, null, NOTIFY_DELETE);
+            }
             Log.d(TAG, "Delete uri: " + match + " result: " + result);
         } else {
             Log.d(TAG, "Delete. Not support URI.");
@@ -609,6 +640,9 @@ public class EabProvider extends ContentProvider {
         if (!TextUtils.isEmpty(tableName)) {
             result = db.updateWithOnConflict(tableName, contentValues,
                     selection, selectionArgs, SQLiteDatabase.CONFLICT_REPLACE);
+            if (result > 0) {
+                getContext().getContentResolver().notifyChange(uri, null, NOTIFY_UPDATE);
+            }
             Log.d(TAG, "Update uri: " + match + " result: " + result);
         } else {
             Log.d(TAG, "Update. Not support URI.");
@@ -623,13 +657,11 @@ public class EabProvider extends ContentProvider {
 
     @VisibleForTesting
     public SQLiteDatabase getWritableDatabase() {
-        Log.d(TAG, "getWritableDatabase");
         return mOpenHelper.getWritableDatabase();
     }
 
     @VisibleForTesting
     public SQLiteDatabase getReadableDatabase() {
-        Log.d(TAG, "getReadableDatabase");
         return mOpenHelper.getReadableDatabase();
     }
 }

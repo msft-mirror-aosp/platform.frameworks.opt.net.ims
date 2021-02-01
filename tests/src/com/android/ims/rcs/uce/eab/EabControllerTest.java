@@ -21,10 +21,9 @@ import static android.telephony.ims.RcsContactUceCapability.SOURCE_TYPE_NETWORK;
 
 import static com.android.ims.rcs.uce.eab.EabProvider.CONTACT_URI;
 
-import static java.time.temporal.ChronoUnit.DAYS;
-
 import android.content.ContentValues;
 import android.net.Uri;
+import android.os.Looper;
 import android.telephony.ims.RcsContactPresenceTuple;
 import android.telephony.ims.RcsContactUceCapability;
 import android.test.mock.MockContentResolver;
@@ -40,8 +39,10 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
-import java.time.Instant;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Calendar;
+import java.util.GregorianCalendar;
 import java.util.List;
 
 @RunWith(AndroidJUnit4.class)
@@ -69,7 +70,8 @@ public class EabControllerTest extends ImsTestBase {
         mockContentResolver.addProvider(EabProvider.AUTHORITY, mEabProviderTestable);
 
         insertContactInfoToDB();
-        mEabController = new EabControllerImpl(mContext, TEST_SUB_ID, null, null);
+        mEabController = new EabControllerImpl(
+                mContext, TEST_SUB_ID, null, Looper.getMainLooper());
     }
 
     @After
@@ -124,26 +126,35 @@ public class EabControllerTest extends ImsTestBase {
     }
 
     private RcsContactUceCapability createPresenceCapability(boolean isExpired) {
-        long timeStamp = isExpired ? Instant.now().minus(100, DAYS).getEpochSecond()
-                : Instant.now().plus(100, DAYS).getEpochSecond();
+        String timeStamp;
+        GregorianCalendar date = new GregorianCalendar();
+        if (isExpired) {
+            date.add(Calendar.DATE, -120);
+        } else {
+            date.add(Calendar.DATE, 120);
+        }
+
+        timeStamp = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX")
+                .format(date.getTime());
+
         RcsContactPresenceTuple.ServiceCapabilities.Builder serviceCapabilitiesBuilder =
                 new RcsContactPresenceTuple.ServiceCapabilities.Builder(TEST_AUDIO_CAPABLE,
                         TEST_VIDEO_CAPABLE);
         RcsContactPresenceTuple tupleWithServiceCapabilities =
                 new RcsContactPresenceTuple.Builder(TEST_SERVICE_STATUS, TEST_SERVICE_SERVICE_ID,
                         TEST_SERVICE_VERSION)
-                        .addDescription(TEST_SERVICE_DESCRIPTION)
-                        .addContactUri(TEST_CONTACT_URI)
-                        .addServiceCapabilities(serviceCapabilitiesBuilder.build())
-                        .addTimeStamp(String.valueOf(timeStamp))
+                        .setServiceDescription(TEST_SERVICE_DESCRIPTION)
+                        .setContactUri(TEST_CONTACT_URI)
+                        .setServiceCapabilities(serviceCapabilitiesBuilder.build())
+                        .setTimestamp(String.valueOf(timeStamp))
                         .build();
 
         RcsContactPresenceTuple tupleWithEmptyServiceCapabilities =
                 new RcsContactPresenceTuple.Builder(TEST_SERVICE_STATUS, TEST_SERVICE_SERVICE_ID,
                         TEST_SERVICE_VERSION)
-                        .addDescription(TEST_SERVICE_DESCRIPTION)
-                        .addContactUri(TEST_CONTACT_URI)
-                        .addTimeStamp(String.valueOf(timeStamp))
+                        .setServiceDescription(TEST_SERVICE_DESCRIPTION)
+                        .setContactUri(TEST_CONTACT_URI)
+                        .setTimestamp(String.valueOf(timeStamp))
                         .build();
 
         RcsContactUceCapability.PresenceBuilder builder =
