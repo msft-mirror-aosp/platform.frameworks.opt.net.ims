@@ -16,17 +16,23 @@
 
 package com.android.ims.rcs.uce.presence.publish;
 
+import static com.android.ims.rcs.uce.presence.publish.PublishController.PUBLISH_TRIGGER_RETRY;
+import static com.android.ims.rcs.uce.presence.publish.PublishController.PUBLISH_TRIGGER_VT_SETTING_CHANGE;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 import android.os.Handler;
 import android.os.Looper;
 import android.os.RemoteCallbackList;
 import android.telephony.ims.RcsUceAdapter;
+import android.telephony.ims.aidl.IImsCapabilityCallback;
 import android.telephony.ims.aidl.IRcsUcePublishStateCallback;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
@@ -34,6 +40,7 @@ import androidx.test.filters.SmallTest;
 
 import com.android.ims.RcsFeatureManager;
 import com.android.ims.rcs.uce.UceController;
+import com.android.ims.rcs.uce.presence.publish.PublishController.PublishControllerCallback;
 import com.android.ims.rcs.uce.presence.publish.PublishControllerImpl.DeviceCapListenerFactory;
 import com.android.ims.rcs.uce.presence.publish.PublishControllerImpl.PublishProcessorFactory;
 import com.android.ims.ImsTestBase;
@@ -151,15 +158,102 @@ public class PublishControllerImplTest extends ImsTestBase {
 
     @Test
     @SmallTest
-    public void testRequestPublishFromService() throws Exception {
+    public void testRequestPublishFromServiceWithoutRcsPresenceCapability() throws Exception {
         PublishControllerImpl publishController = createPublishController();
 
+        // Trigger the PUBLISH request from the service
+        publishController.requestPublishCapabilitiesFromService(
+                RcsUceAdapter.CAPABILITY_UPDATE_TRIGGER_MOVE_TO_IWLAN);
+
+        Handler handler = publishController.getPublishHandler();
+        waitForHandlerAction(handler, 1000);
+        verify(mPublishProcessor, never()).doPublish(PublishController.PUBLISH_TRIGGER_SERVICE);
+
+        IImsCapabilityCallback callback = publishController.getRcsCapabilitiesCallback();
+        callback.onCapabilitiesStatusChanged(RcsUceAdapter.CAPABILITY_TYPE_PRESENCE_UCE);
+        verify(mPublishProcessor).checkAndSendPendingRequest();
+    }
+
+    @Test
+    @SmallTest
+    public void testRequestPublishFromServiceWithRcsCapability() throws Exception {
+        PublishControllerImpl publishController = createPublishController();
+
+        // Set the PRESENCE is capable
+        IImsCapabilityCallback RcsCapCallback = publishController.getRcsCapabilitiesCallback();
+        RcsCapCallback.onCapabilitiesStatusChanged(RcsUceAdapter.CAPABILITY_TYPE_PRESENCE_UCE);
+
+        // Trigger the PUBLISH request from the service.
         publishController.requestPublishCapabilitiesFromService(
                 RcsUceAdapter.CAPABILITY_UPDATE_TRIGGER_MOVE_TO_IWLAN);
 
         Handler handler = publishController.getPublishHandler();
         waitForHandlerAction(handler, 1000);
         verify(mPublishProcessor).doPublish(PublishController.PUBLISH_TRIGGER_SERVICE);
+    }
+
+    @Test
+    @SmallTest
+    public void testFirstRequestPublishIsTriggeredFromService() throws Exception {
+        PublishControllerImpl publishController = createPublishController();
+
+        // Set the PRESENCE is capable
+        IImsCapabilityCallback RcsCapCallback = publishController.getRcsCapabilitiesCallback();
+        RcsCapCallback.onCapabilitiesStatusChanged(RcsUceAdapter.CAPABILITY_TYPE_PRESENCE_UCE);
+
+        // Trigger a publish request (VT changes)
+        PublishControllerCallback callback = publishController.getPublishControllerCallback();
+        callback.requestPublishFromInternal(PUBLISH_TRIGGER_VT_SETTING_CHANGE, 0);
+        Handler handler = publishController.getPublishHandler();
+        waitForHandlerAction(handler, 1000);
+
+        // Verify it cannot be processed because the first request should triggred from service.
+        verify(mPublishProcessor, never()).doPublish(PUBLISH_TRIGGER_VT_SETTING_CHANGE);
+
+        // Trigger the PUBLISH request from the service.
+        publishController.requestPublishCapabilitiesFromService(
+                RcsUceAdapter.CAPABILITY_UPDATE_TRIGGER_MOVE_TO_IWLAN);
+        waitForHandlerAction(handler, 1000);
+
+        // Verify the request which is from the service can be processed
+        verify(mPublishProcessor).doPublish(PublishController.PUBLISH_TRIGGER_SERVICE);
+
+        // Trigger the third publish request (VT changes)
+        callback.requestPublishFromInternal(PUBLISH_TRIGGER_VT_SETTING_CHANGE, 0);
+        waitForHandlerAction(handler, 1000);
+
+        // Verify the publish request can be processed this time.
+        verify(mPublishProcessor).doPublish(PublishController.PUBLISH_TRIGGER_VT_SETTING_CHANGE);
+    }
+
+    @Test
+    @SmallTest
+    public void testRequestPublishWhenDeviceCapabilitiesChange() throws Exception {
+        PublishControllerImpl publishController = createPublishController();
+
+        // Set the PRESENCE is capable
+        IImsCapabilityCallback RcsCapCallback = publishController.getRcsCapabilitiesCallback();
+        RcsCapCallback.onCapabilitiesStatusChanged(RcsUceAdapter.CAPABILITY_TYPE_PRESENCE_UCE);
+
+        // Trigger the PUBLISH request from the service.
+        publishController.requestPublishCapabilitiesFromService(
+                RcsUceAdapter.CAPABILITY_UPDATE_TRIGGER_MOVE_TO_IWLAN);
+        Handler handler = publishController.getPublishHandler();
+        waitForHandlerAction(handler, 1000);
+
+        // Verify the request which is from the service can be processed
+        verify(mPublishProcessor).doPublish(PublishController.PUBLISH_TRIGGER_SERVICE);
+
+        // Trigger the sedond publish (RETRY), it should be processed after 10 seconds.
+        PublishControllerCallback callback = publishController.getPublishControllerCallback();
+        callback.requestPublishFromInternal(PUBLISH_TRIGGER_RETRY, 10000);
+
+        // Trigger another publish request (VT changes)
+        callback.requestPublishFromInternal(PUBLISH_TRIGGER_VT_SETTING_CHANGE, 0);
+        waitForHandlerAction(handler, 1000);
+
+        // Verify the publish request can be processed immediately
+        verify(mPublishProcessor).doPublish(PUBLISH_TRIGGER_VT_SETTING_CHANGE);
     }
 
     private PublishControllerImpl createPublishController() {

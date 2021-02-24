@@ -16,6 +16,9 @@
 
 package com.android.ims.rcs.uce.presence.publish;
 
+import static android.telephony.ims.RcsContactUceCapability.CAPABILITY_MECHANISM_PRESENCE;
+
+import android.annotation.NonNull;
 import android.content.Context;
 import android.os.RemoteException;
 import android.telephony.ims.RcsContactUceCapability;
@@ -118,7 +121,7 @@ public class PublishProcessor {
 
         // Get the latest device's capabilities.
         RcsContactUceCapability deviceCapability =
-                mDeviceCapabilities.getDeviceCapabilities(mContext);
+                mDeviceCapabilities.getDeviceCapabilities(CAPABILITY_MECHANISM_PRESENCE, mContext);
         if (deviceCapability == null) {
             logw("doPublish: device capability is null");
             return;
@@ -131,8 +134,16 @@ public class PublishProcessor {
             return;
         }
 
+        // Set the pending request and return if RCS is not connected.
+        RcsFeatureManager featureManager = mRcsFeatureManager;
+        if (featureManager == null) {
+            logw("doPublish: NOT connected");
+            setPendingRequest(true);
+            return;
+        }
+
         // Publish to the Presence server.
-        publishCapabilities(pidfXml);
+        publishCapabilities(featureManager, pidfXml);
     }
 
     // Check if the giving trigger type should reset the retry count.
@@ -169,13 +180,7 @@ public class PublishProcessor {
         // Set the pending flag if there's already a request running now.
         if (mProcessorState.isPublishingNow()) {
             logd("isPublishAllowed: There is already a request running now");
-            mProcessorState.setPendingRequest(true);
-            return false;
-        }
-
-        // Check if the publishing request has reached the maximum number of retries.
-        if (mProcessorState.isReachMaximumRetries()) {
-            logd("isPublishAllowed: It has reached maximum number of retries");
+            setPendingRequest(true);
             return false;
         }
 
@@ -192,27 +197,15 @@ public class PublishProcessor {
     }
 
     // Publish the device capabilities with the given pidf
-    private void publishCapabilities(String pidfXml) {
-        if (mIsDestroyed) {
-            logw("publishCapabilities: This instance is already destroyed");
-            return;
-        }
-
-        // Check if the RCS is connected.
-        RcsFeatureManager featureManager = mRcsFeatureManager;
-        if (featureManager == null) {
-            mLocalLog.log("publish capabilities: not connected");
-            logw("publishCapabilities: NOT connected");
-            return;
-        }
-
+    private void publishCapabilities(@NonNull RcsFeatureManager featureManager,
+            @NonNull String pidfXml) {
         PublishRequestResponse requestResponse = null;
         try {
             // Set publishing flag
             mProcessorState.setPublishingFlag(true);
 
             // Clear the pending request flag since we're publishing the latest device's capability
-            mProcessorState.setPendingRequest(false);
+            setPendingRequest(false);
 
             // Generate a unique taskId to track this request.
             long taskId = mProcessorState.generatePublishTaskId();
@@ -252,12 +245,12 @@ public class PublishProcessor {
         mLocalLog.log("Receive command error code=" + requestResponse.getCmdErrorCode());
         logd("onCommandError: " + requestResponse.toString());
 
-        if (requestResponse.needRetry()) {
+        if (!mProcessorState.isReachMaximumRetries() && requestResponse.needRetry()) {
             // Increase the retry count
             mProcessorState.increaseRetryCount();
 
             // Reset the pending flag since it is going to resend a publish request.
-            mProcessorState.setPendingRequest(false);
+            setPendingRequest(false);
 
             // Resend a publish request
             long delayTime = mProcessorState.getDelayTimeToAllowPublish();
@@ -293,12 +286,12 @@ public class PublishProcessor {
         mLocalLog.log("Receive network response code=" + requestResponse.getNetworkRespSipCode());
         logd("onNetworkResponse: " + requestResponse.toString());
 
-        if (requestResponse.needRetry()) {
+        if (!mProcessorState.isReachMaximumRetries() && requestResponse.needRetry()) {
             // Increase the retry count
             mProcessorState.increaseRetryCount();
 
             // Reset the pending flag since it is going to resend a publish request.
-            mProcessorState.setPendingRequest(false);
+            setPendingRequest(false);
 
             // Resend a publish request
             long delayTime = mProcessorState.getDelayTimeToAllowPublish();
@@ -375,7 +368,11 @@ public class PublishProcessor {
         logd("setRequestEnded: taskId=" + taskId);
     }
 
-    private void checkAndSendPendingRequest() {
+    public void setPendingRequest(boolean pendingRequest) {
+        mProcessorState.setPendingRequest(pendingRequest);
+    }
+
+    public void checkAndSendPendingRequest() {
         if (mIsDestroyed) return;
         if (mProcessorState.hasPendingRequest()) {
             logd("checkAndSendPendingRequest: send pending request");
