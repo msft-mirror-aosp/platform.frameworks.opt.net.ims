@@ -23,6 +23,7 @@ import android.util.Log;
 
 import com.android.ims.rcs.uce.eab.EabProvider.ContactColumns;
 import com.android.ims.rcs.uce.eab.EabProvider.EabCommonColumns;
+import com.android.ims.rcs.uce.eab.EabProvider.OptionsColumns;
 import com.android.ims.rcs.uce.eab.EabProvider.PresenceTupleColumns;
 import com.android.ims.rcs.uce.util.UceUtils;
 
@@ -36,6 +37,42 @@ import java.util.stream.Collectors;
 public class EabUtil {
 
     private static final String LOG_TAG = UceUtils.getLogPrefix() + "EabUtil";
+
+    /**
+     * Get the given EAB contacts from the EAB database.
+     *
+     * Output format:
+     * [PHONE_NUMBER], [RAW_CONTACT_ID], [CONTACT_ID], [DATA_ID]
+     */
+    public static String getContactFromEab(Context context, String contact) {
+        StringBuilder result = new StringBuilder();
+        try (Cursor cursor = context.getContentResolver().query(
+                EabProvider.CONTACT_URI,
+                new String[]{ContactColumns.PHONE_NUMBER,
+                        ContactColumns.RAW_CONTACT_ID,
+                        ContactColumns.CONTACT_ID,
+                        ContactColumns.DATA_ID},
+                ContactColumns.PHONE_NUMBER + "=?",
+                new String[]{contact}, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                result.append(cursor.getString(cursor.getColumnIndex(
+                        ContactColumns.PHONE_NUMBER)));
+                result.append(",");
+                result.append(cursor.getString(cursor.getColumnIndex(
+                        ContactColumns.RAW_CONTACT_ID)));
+                result.append(",");
+                result.append(cursor.getString(cursor.getColumnIndex(
+                        ContactColumns.CONTACT_ID)));
+                result.append(",");
+                result.append(cursor.getString(cursor.getColumnIndex(
+                        ContactColumns.DATA_ID)));
+            }
+        } catch (Exception e) {
+            Log.w(LOG_TAG, "getEabContactId exception " + e);
+        }
+        Log.d(LOG_TAG, "getContactFromEab() result: " + result);
+        return result.toString();
+    }
 
     /**
      * Remove the given EAB contacts from the EAB database.
@@ -108,6 +145,8 @@ public class EabUtil {
         int count = 0;
         count = context.getContentResolver().delete(EabProvider.PRESENCE_URI,
                 PresenceTupleColumns.EAB_COMMON_ID + "=?", new String[]{String.valueOf(commonId)});
+        context.getContentResolver().delete(EabProvider.OPTIONS_URI,
+                OptionsColumns.EAB_COMMON_ID + "=?", new String[]{String.valueOf(commonId)});
         context.getContentResolver().delete(EabProvider.COMMON_URI,
                 EabCommonColumns.EAB_CONTACT_ID + "=?", new String[]{String.valueOf(contactId)});
         context.getContentResolver().delete(EabProvider.CONTACT_URI,

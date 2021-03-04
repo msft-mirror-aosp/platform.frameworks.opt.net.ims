@@ -32,11 +32,13 @@ import android.telephony.ims.RcsUceAdapter.StackPublishTriggerType;
 import android.telephony.ims.RegistrationManager;
 import android.telephony.ims.aidl.ICapabilityExchangeEventListener;
 import android.telephony.ims.aidl.IImsCapabilityCallback;
+import android.telephony.ims.aidl.IImsConfig;
 import android.telephony.ims.aidl.IImsRcsController;
 import android.telephony.ims.aidl.IImsRcsFeature;
 import android.telephony.ims.aidl.IImsRegistration;
 import android.telephony.ims.aidl.IImsRegistrationCallback;
 import android.telephony.ims.aidl.IOptionsRequestCallback;
+import android.telephony.ims.aidl.IOptionsResponseCallback;
 import android.telephony.ims.aidl.IPublishResponseCallback;
 import android.telephony.ims.aidl.ISipTransport;
 import android.telephony.ims.aidl.ISubscribeResponseCallback;
@@ -388,9 +390,13 @@ public class RcsFeatureManager implements FeatureUpdates {
     /**
      * Query the availability of an IMS RCS capability.
      */
-    public boolean isAvailable(@RcsImsCapabilities.RcsImsCapabilityFlag int capability)
+    public boolean isAvailable(@RcsImsCapabilities.RcsImsCapabilityFlag int capability,
+            @ImsRegistrationImplBase.ImsRegistrationTech int radioTech)
             throws android.telephony.ims.ImsException {
         try {
+            if (mRcsFeatureConnection.getRegistrationTech() != radioTech) {
+                return false;
+            }
             int currentStatus = mRcsFeatureConnection.queryCapabilityStatus();
             return new RcsImsCapabilities(currentStatus).isCapable(capability);
         } catch (RemoteException e) {
@@ -420,6 +426,11 @@ public class RcsFeatureManager implements FeatureUpdates {
     public void requestCapabilities(List<Uri> uris, ISubscribeResponseCallback c)
             throws RemoteException {
         mRcsFeatureConnection.requestCapabilities(uris, c);
+    }
+
+    public void sendOptionsCapabilityRequest(Uri contactUri, List<String> myCapabilities,
+            IOptionsResponseCallback callback) throws RemoteException {
+        mRcsFeatureConnection.sendOptionsCapabilityRequest(contactUri, myCapabilities, callback);
     }
 
     /**
@@ -582,6 +593,10 @@ public class RcsFeatureManager implements FeatureUpdates {
          * Mock-able interface for {@link SubscriptionManager#getSubId(int)} used for testing.
          */
         int getSubId(int slotId);
+    }
+
+    public IImsConfig getConfig() {
+        return mRcsFeatureConnection.getConfig();
     }
 
     private static SubscriptionManagerProxy sSubscriptionManagerProxy

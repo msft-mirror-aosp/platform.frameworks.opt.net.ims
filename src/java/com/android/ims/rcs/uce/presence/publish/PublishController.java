@@ -19,11 +19,13 @@ package com.android.ims.rcs.uce.presence.publish;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.telephony.ims.RcsContactUceCapability;
+import android.telephony.ims.RcsContactUceCapability.CapabilityMechanism;
 import android.telephony.ims.RcsUceAdapter.PublishState;
 import android.telephony.ims.aidl.IRcsUcePublishStateCallback;
 
 import com.android.ims.rcs.uce.ControllerBase;
 
+import java.io.PrintWriter;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.time.Instant;
@@ -135,7 +137,7 @@ public interface PublishController extends ControllerBase {
     /**
      * Retrieve the device's capabilities.
      */
-    RcsContactUceCapability getDeviceCapabilities();
+    RcsContactUceCapability getDeviceCapabilities(@CapabilityMechanism int mechanism);
 
     /**
      * Publish the device's capabilities to the Presence server.
@@ -151,4 +153,9 @@ public interface PublishController extends ControllerBase {
      * Removes an existing {@link PublishStateCallback}.
      */
     void unregisterPublishStateCallback(@NonNull IRcsUcePublishStateCallback c);
+
+    /**
+     * Dump the state of this PublishController to the printWriter.
+     */
+    void dump(PrintWriter printWriter);
 }

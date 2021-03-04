@@ -23,17 +23,24 @@ import android.os.Looper;
 import android.os.Message;
 import android.os.RemoteCallbackList;
 import android.os.RemoteException;
+import android.telephony.ims.ImsException;
 import android.telephony.ims.RcsContactUceCapability;
+import android.telephony.ims.RcsContactUceCapability.CapabilityMechanism;
 import android.telephony.ims.RcsUceAdapter;
 import android.telephony.ims.RcsUceAdapter.PublishState;
+import android.telephony.ims.aidl.IImsCapabilityCallback;
 import android.telephony.ims.aidl.IRcsUcePublishStateCallback;
+import android.telephony.ims.feature.RcsFeature.RcsImsCapabilities;
+import android.util.LocalLog;
 import android.util.Log;
 
 import com.android.ims.RcsFeatureManager;
 import com.android.ims.rcs.uce.UceController.UceControllerCallback;
 import com.android.ims.rcs.uce.util.UceUtils;
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.util.IndentingPrintWriter;
 
+import java.io.PrintWriter;
 import java.lang.ref.WeakReference;
 import java.time.Instant;
 import java.util.HashMap;
@@ -66,8 +73,12 @@ public class PublishControllerImpl implements PublishController {
 
     private final int mSubId;
     private final Context mContext;
+    private final LocalLog mLocalLog = new LocalLog(UceUtils.LOG_SIZE);
     private PublishHandler mPublishHandler;
     private volatile boolean mIsDestroyedFlag;
+    private volatile boolean mCapabilityPresenceEnabled;
+    private volatile boolean mReceivePublishFromService;
+    private volatile RcsFeatureManager mRcsFeatureManager;
     private final UceControllerCallback mUceCtrlCallback;
 
     // The device publish state
@@ -93,6 +104,31 @@ public class PublishControllerImpl implements PublishController {
     private DeviceCapListenerFactory mDeviceCapListenerFactory =
             (context, subId, capInfo, callback, looper)
                     -> new DeviceCapabilityListener(context, subId, capInfo, callback, looper);
+
+    // Listen to the RCS availability status changed.
+    private final IImsCapabilityCallback mRcsCapabilitiesCallback =
+            new IImsCapabilityCallback.Stub() {
+        @Override
+        public void onQueryCapabilityConfiguration(
+                int resultCapability, int resultRadioTech, boolean enabled) {
+        }
+        @Override
+        public void onCapabilitiesStatusChanged(int capabilities) {
+            logd("onCapabilitiesStatusChanged: " + capabilities);
+            RcsImsCapabilities RcsImsCapabilities = new RcsImsCapabilities(capabilities);
+            mCapabilityPresenceEnabled =
+                    RcsImsCapabilities.isCapable(RcsUceAdapter.CAPABILITY_TYPE_PRESENCE_UCE);
+
+            // Trigger a publish request if the RCS capabilities presence is enabled.
+            if (mCapabilityPresenceEnabled) {
+                mPublishProcessor.checkAndSendPendingRequest();
+            }
+        }
+        @Override
+        public void onChangeCapabilityConfigurationError(int capability, int radioTech,
+                int reason) {
+        }
+    };
 
     public PublishControllerImpl(Context context, int subId, UceControllerCallback callback,
             Looper looper) {
@@ -142,12 +178,16 @@ public class PublishControllerImpl implements PublishController {
     @Override
     public void onRcsConnected(RcsFeatureManager manager) {
         logd("onRcsConnected");
+        mRcsFeatureManager = manager;
         mPublishProcessor.onRcsConnected(manager);
+        registerRcsAvailabilityChanged(manager);
     }
 
     @Override
     public void onRcsDisconnected() {
         logd("onRcsDisconnected");
+        mRcsFeatureManager = null;
+        mCapabilityPresenceEnabled = false;
         mPublishProcessor.onRcsDisconnected();
     }
 
@@ -155,6 +195,8 @@ public class PublishControllerImpl implements PublishController {
     public void onDestroy() {
         logi("onDestroy");
         mIsDestroyedFlag = true;
+        mCapabilityPresenceEnabled = false;
+        unregisterRcsAvailabilityChanged();
         mDeviceCapListener.onDestroy();   // It will turn off the listener automatically.
         mPublishHandler.onDestroy();
         mPublishProcessor.onDestroy();
@@ -196,7 +238,7 @@ public class PublishControllerImpl implements PublishController {
         }
     }
 
-    // Clear the publish state callback since the publish controller instance is destroyed.
+    // Clear all the publish state callbacks since the publish controller instance is destroyed.
     private void clearPublishStateCallbacks() {
         synchronized (mPublishStateLock) {
             logd("clearPublishStateCallbacks");
@@ -221,8 +263,34 @@ public class PublishControllerImpl implements PublishController {
     }
 
     @Override
-    public RcsContactUceCapability getDeviceCapabilities() {
-        return mDeviceCapabilityInfo.getDeviceCapabilities(mContext);
+    public RcsContactUceCapability getDeviceCapabilities(@CapabilityMechanism int mechanism) {
+        return mDeviceCapabilityInfo.getDeviceCapabilities(mechanism, mContext);
+    }
+
+    /*
+     * Register the availability callback to receive the RCS capabilities change. This method is
+     * called when the RCS is connected.
+     */
+    private void registerRcsAvailabilityChanged(RcsFeatureManager manager) {
+        try {
+            manager.registerRcsAvailabilityCallback(mSubId, mRcsCapabilitiesCallback);
+        } catch (ImsException e) {
+            logw("registerRcsAvailabilityChanged exception " + e);
+        }
+    }
+
+    /*
+     * Unregister the availability callback. This method is called when the PublishController
+     * instance is destroyed.
+     */
+    private void unregisterRcsAvailabilityChanged() {
+        RcsFeatureManager manager = mRcsFeatureManager;
+        if (manager == null) return;
+        try {
+            manager.unregisterRcsAvailabilityCallback(mSubId, mRcsCapabilitiesCallback);
+        } catch (Exception e) {
+            // Do not handle the exception
+        }
     }
 
     // The local publish request from the sub-components which interact with PublishController.
@@ -274,6 +342,7 @@ public class PublishControllerImpl implements PublishController {
     @Override
     public void requestPublishCapabilitiesFromService(int triggerType) {
         logi("Receive the publish request from service: service trigger type=" + triggerType);
+        mReceivePublishFromService = true;
         mPublishHandler.requestPublish(PublishController.PUBLISH_TRIGGER_SERVICE);
     }
 
@@ -376,13 +445,29 @@ public class PublishControllerImpl implements PublishController {
                 return;
             }
             if (publishCtrl.mIsDestroyedFlag) return;
+
+            // Check if the PUBLISH request is allowed.
+            if (!publishCtrl.isPublishRequestAllowed()) {
+                publishCtrl.logd("requestPublish: SKIP. The publish request is not allowed.");
+                publishCtrl.mPublishProcessor.setPendingRequest(true);
+                return;
+            }
+
             publishCtrl.logd("requestPublish: " + type + ", delay=" + delay);
 
-            // Don't send duplicated publish request because it always publish the latest device
-            // capabilities.
-            if (hasMessages(MSG_REQUEST_PUBLISH)) {
-                publishCtrl.logd("requestPublish: Skip. there is already a request in the queue");
-                return;
+            // If the trigger type is not RETRY, it means that the device capabilities have been
+            // changed. To make sure that the publish request can be processed immediately, remove
+            // the existing one and send a new publish request without delayed.
+            if (type != PublishController.PUBLISH_TRIGGER_RETRY) {
+                removeMessages(MSG_REQUEST_PUBLISH);
+            } else {
+                // Skip this request if the trigger type is RETRY and there's alreay a publish
+                // request in the queue.
+                if (hasMessages(MSG_REQUEST_PUBLISH)) {
+                    publishCtrl.logd(
+                            "requestPublish: Skip. There's already a request in the queue");
+                    return;
+                }
             }
 
             Message message = obtainMessage();
@@ -454,6 +539,23 @@ public class PublishControllerImpl implements PublishController {
     }
 
     /**
+     * Check if the PUBLISH request is allowed.
+     */
+    private boolean isPublishRequestAllowed() {
+        // The PUBLISH request requires that the RCS PRESENCE is capable.
+        if (!mCapabilityPresenceEnabled) {
+            logd("isPublishRequestAllowed: capability presence uce is not enabled.");
+            return false;
+        }
+        // The first PUBLISH request is required to be triggered from the service.
+        if (!mReceivePublishFromService) {
+            logd("requestPublish: Have not received the first PUBLISH request from the service.");
+            return false;
+        }
+        return true;
+    }
+
+    /**
      * Update the publish state and notify the publish state callback if the new state is different
      * from original state.
      */
@@ -520,16 +622,29 @@ public class PublishControllerImpl implements PublishController {
         return mPublishHandler;
     }
 
+    @VisibleForTesting
+    public IImsCapabilityCallback getRcsCapabilitiesCallback() {
+        return mRcsCapabilitiesCallback;
+    }
+
+    @VisibleForTesting
+    public PublishControllerCallback getPublishControllerCallback() {
+        return mPublishControllerCallback;
+    }
+
     private void logd(String log) {
         Log.d(LOG_TAG, getLogPrefix().append(log).toString());
+        mLocalLog.log("[D] " + log);
     }
 
     private void logi(String log) {
         Log.i(LOG_TAG, getLogPrefix().append(log).toString());
+        mLocalLog.log("[I] " + log);
     }
 
     private void logw(String log) {
         Log.w(LOG_TAG, getLogPrefix().append(log).toString());
+        mLocalLog.log("[W] " + log);
     }
 
     private StringBuilder getLogPrefix() {
@@ -537,5 +652,33 @@ public class PublishControllerImpl implements PublishController {
         builder.append(mSubId);
         builder.append("] ");
         return builder;
+    }
+
+    @Override
+    public void dump(PrintWriter printWriter) {
+        IndentingPrintWriter pw = new IndentingPrintWriter(printWriter, "  ");
+        pw.println("PublishControllerImpl" + "[subId: " + mSubId + "]:");
+        pw.increaseIndent();
+
+        pw.print("mCapabilityPresenceEnabled=");
+        pw.println(mCapabilityPresenceEnabled);
+        pw.print("mPublishState=");
+        pw.print(mPublishState);
+        pw.print(" at time ");
+        pw.println(mPublishStateUpdatedTime);
+
+        if (mPublishProcessor != null) {
+            mPublishProcessor.dump(pw);
+        } else {
+            pw.println("mPublishProcessor is null");
+        }
+
+        pw.println("Log:");
+        pw.increaseIndent();
+        mLocalLog.dump(pw);
+        pw.decreaseIndent();
+        pw.println("---");
+
+        pw.decreaseIndent();
     }
 }
