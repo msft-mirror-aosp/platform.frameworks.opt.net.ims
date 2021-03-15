@@ -25,6 +25,7 @@ import android.telephony.ims.aidl.IRcsUcePublishStateCallback;
 
 import com.android.ims.rcs.uce.ControllerBase;
 
+import java.io.PrintWriter;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.time.Instant;
@@ -94,7 +95,7 @@ public interface PublishController extends ControllerBase {
         /**
          * Request publish from local.
          */
-        void requestPublishFromInternal(@PublishTriggerType int type, long delay);
+        void requestPublishFromInternal(@PublishTriggerType int type);
 
         /**
          * Receive the command error callback of the request from ImsService.
@@ -120,7 +121,12 @@ public interface PublishController extends ControllerBase {
         /**
          * Update the publish request result.
          */
-        void updatePublishRequestResult(int publishState, Instant updatedTimestamp);
+        void updatePublishRequestResult(int publishState, Instant updatedTimestamp, String pidfXml);
+
+        /**
+         * Update the value of the publish throttle.
+         */
+        void updatePublishThrottle(int value);
     }
 
     /**
@@ -152,4 +158,9 @@ public interface PublishController extends ControllerBase {
      * Removes an existing {@link PublishStateCallback}.
      */
     void unregisterPublishStateCallback(@NonNull IRcsUcePublishStateCallback c);
+
+    /**
+     * Dump the state of this PublishController to the printWriter.
+     */
+    void dump(PrintWriter printWriter);
 }
