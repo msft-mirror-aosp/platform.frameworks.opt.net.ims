@@ -54,6 +54,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
+import java.util.Set;
 
 /**
  * The UceController will manage the RCS UCE requests on a per subscription basis. When it receives
@@ -116,17 +117,6 @@ public class UceController {
          */
         void refreshCapabilities(@NonNull List<Uri> contactNumbers,
                 @NonNull IRcsUceControllerCallback callback) throws RemoteException;
-
-        /**
-         * The method is called when the EabController and the PublishController want to receive
-         * published state changes.
-         */
-        void registerPublishStateCallback(@NonNull IRcsUcePublishStateCallback c);
-
-        /**
-         * Remove the existing PublishStateCallback.
-         */
-        void unregisterPublishStateCallback(@NonNull IRcsUcePublishStateCallback c);
     }
 
     /**
@@ -284,6 +274,8 @@ public class UceController {
             mRcsFeatureManager.removeCapabilityEventCallback(mCapabilityEventListener);
             mRcsFeatureManager = null;
         }
+        // Reset Service specific state
+        mServerState.updateRequestForbidden(false, null, 0L);
         // Notify each controllers that RCS is disconnected.
         mEabController.onRcsDisconnected();
         mPublishController.onRcsDisconnected();
@@ -309,6 +301,16 @@ public class UceController {
         mSubscribeController.onDestroy();
         mOptionsController.onDestroy();
         mLooper.quit();
+    }
+
+    /**
+     * Notify all associated classes that the carrier configuration has changed for the subId.
+     */
+    public void onCarrierConfigChanged() {
+        mEabController.onCarrierConfigChanged();
+        mPublishController.onCarrierConfigChanged();
+        mSubscribeController.onCarrierConfigChanged();
+        mOptionsController.onCarrierConfigChanged();
     }
 
     /*
@@ -357,18 +359,6 @@ public class UceController {
                 @NonNull IRcsUceControllerCallback callback) throws RemoteException{
             logd("refreshCapabilities: " + contactNumbers.size());
             UceController.this.requestCapabilitiesInternal(contactNumbers, true, callback);
-        }
-
-        @Override
-        public void registerPublishStateCallback(@NonNull IRcsUcePublishStateCallback c) {
-            logd("UceControllerCallback: registerPublishStateCallback");
-            UceController.this.registerPublishStateCallback(c);
-        }
-
-        @Override
-        public void unregisterPublishStateCallback(@NonNull IRcsUcePublishStateCallback c) {
-            logd("UceControllerCallback: unregisterPublishStateCallback");
-            UceController.this.unregisterPublishStateCallback(c);
         }
     };
 
@@ -467,7 +457,7 @@ public class UceController {
         if (mServerState.isRequestForbidden()) {
             Integer errorCode = mServerState.getForbiddenErrorCode();
             long retryAfter = mServerState.getRetryAfterMillis();
-            logw("requestCapabilities: The request is forbidden, errorCode=" + errorCode
+            logw("requestAvailability: The request is forbidden, errorCode=" + errorCode
                 + ", retryAfter=" + retryAfter);
             errorCode = (errorCode != null) ? errorCode : RcsUceAdapter.ERROR_FORBIDDEN;
             c.onError(errorCode, retryAfter);
@@ -531,6 +521,51 @@ public class UceController {
     }
 
     /**
+     * Add new feature tags to the Set used to calculate the capabilities in PUBLISH.
+     * <p>
+     * Used for testing ONLY.
+     * @return the new capabilities that will be used for PUBLISH.
+     */
+    public RcsContactUceCapability addRegistrationOverrideCapabilities(Set<String> featureTags) {
+        return mPublishController.addRegistrationOverrideCapabilities(featureTags);
+    }
+
+    /**
+     * Remove existing feature tags to the Set used to calculate the capabilities in PUBLISH.
+     * <p>
+     * Used for testing ONLY.
+     * @return the new capabilities that will be used for PUBLISH.
+     */
+    public RcsContactUceCapability removeRegistrationOverrideCapabilities(Set<String> featureTags) {
+        return mPublishController.removeRegistrationOverrideCapabilities(featureTags);
+    }
+
+    /**
+     * Clear all overrides in the Set used to calculate the capabilities in PUBLISH.
+     * <p>
+     * Used for testing ONLY.
+     * @return the new capabilities that will be used for PUBLISH.
+     */
+    public RcsContactUceCapability clearRegistrationOverrideCapabilities() {
+        return mPublishController.clearRegistrationOverrideCapabilities();
+    }
+
+    /**
+     * @return current RcsContactUceCapability instance that will be used for PUBLISH.
+     */
+    public RcsContactUceCapability getLatestRcsContactUceCapability() {
+        return mPublishController.getLatestRcsContactUceCapability();
+    }
+
+    /**
+     * Get the PIDF XML associated with the last successful publish or null if not PUBLISHed to the
+     * network.
+     */
+    public String getLastPidfXml() {
+        return mPublishController.getLastPidfXml();
+    }
+
+    /**
      * Get the subscription ID.
      */
     public int getSubId() {
@@ -539,7 +574,7 @@ public class UceController {
 
     /**
      * Check if the UceController is available.
-     * @return true if the RCS is connected without destroyed.
+     * @return true if RCS is connected without destroyed.
      */
     public boolean isUnavailable() {
         if (!mIsRcsConnected || mIsDestroyedFlag) {
