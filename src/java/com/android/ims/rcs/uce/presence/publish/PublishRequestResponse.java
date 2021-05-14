@@ -20,9 +20,11 @@ import android.annotation.Nullable;
 import android.telephony.ims.RcsUceAdapter;
 import android.telephony.ims.aidl.IPublishResponseCallback;
 import android.telephony.ims.stub.RcsCapabilityExchangeImplBase;
+import android.util.Log;
 
 import com.android.ims.rcs.uce.presence.publish.PublishController.PublishControllerCallback;
 import com.android.ims.rcs.uce.util.NetworkSipCode;
+import com.android.ims.rcs.uce.util.UceUtils;
 
 import java.time.Instant;
 import java.util.Optional;
@@ -31,6 +33,8 @@ import java.util.Optional;
  * Receiving the result callback of the publish request.
  */
 public class PublishRequestResponse {
+
+    private static final String LOG_TAG = UceUtils.getLogPrefix() + "PublishRequestResp";
 
     private final long mTaskId;
     private final String mPidfXml;
@@ -122,6 +126,24 @@ public class PublishRequestResponse {
     }
 
     /**
+     * Retrieve the SIP code from the network response. It will get the value from the Reason
+     * Header first. If the ReasonHeader is not present, it will get the value from the Network
+     * response instead.
+     */
+    public Optional<Integer> getResponseSipCode() {
+        return (mReasonHeaderCause.isPresent()) ? mReasonHeaderCause : mNetworkRespSipCode;
+    }
+
+    /**
+     * Retrieve the REASON from the network response. It will get the value from the Reason Header
+     * first. If the ReasonHeader is not present, it will get the value from the Network response
+     * instead.
+     */
+    public Optional<String> getResponseReason() {
+        return (mReasonHeaderText.isPresent()) ? mReasonHeaderText : mReasonPhrase;
+    }
+
+    /**
      * Get the timestamp of receiving the network response callback.
      */
     public @Nullable Instant getResponseTimestamp() {
@@ -147,6 +169,8 @@ public class PublishRequestResponse {
         PublishControllerCallback ctrlCallback = mPublishCtrlCallback;
         if (ctrlCallback != null) {
             ctrlCallback.onRequestCommandError(this);
+        } else {
+            Log.d(LOG_TAG, "onCommandError: already destroyed. error code=" + errorCode);
         }
     }
 
@@ -159,6 +183,8 @@ public class PublishRequestResponse {
         PublishControllerCallback ctrlCallback = mPublishCtrlCallback;
         if (ctrlCallback != null) {
             ctrlCallback.onRequestNetworkResp(this);
+        } else {
+            Log.d(LOG_TAG, "onNetworkResponse: already destroyed. sip code=" + sipCode);
         }
     }
 
@@ -174,6 +200,9 @@ public class PublishRequestResponse {
         PublishControllerCallback ctrlCallback = mPublishCtrlCallback;
         if (ctrlCallback != null) {
             ctrlCallback.onRequestNetworkResp(this);
+        } else {
+            Log.d(LOG_TAG, "onNetworkResponse: already destroyed. sipCode=" + sipCode +
+                    ", reasonHeader=" + reasonHeaderCause);
         }
     }
 
@@ -189,21 +218,8 @@ public class PublishRequestResponse {
     }
 
     private void updateRetryFlagByNetworkResponse() {
-        int networkRespSipCode = getReasonHeaderCause().orElseGet(
-                () -> getNetworkRespSipCode().orElse(-1));
-        switch (networkRespSipCode) {
-            case NetworkSipCode.SIP_CODE_REQUEST_TIMEOUT:
-            case NetworkSipCode.SIP_CODE_INTERVAL_TOO_BRIEF:
-            case NetworkSipCode.SIP_CODE_TEMPORARILY_UNAVAILABLE:
-            case NetworkSipCode.SIP_CODE_BUSY:
-            case NetworkSipCode.SIP_CODE_SERVER_INTERNAL_ERROR:
-            case NetworkSipCode.SIP_CODE_SERVICE_UNAVAILABLE:
-            case NetworkSipCode.SIP_CODE_SERVER_TIMEOUT:
-            case NetworkSipCode.SIP_CODE_BUSY_EVERYWHERE:
-            case NetworkSipCode.SIP_CODE_DECLINE:
-                mNeedRetry = true;
-                break;
-        }
+        // Disable retry flag because the retry mechanism is implemented in the ImsService.
+        mNeedRetry = false;
     }
 
     /*
