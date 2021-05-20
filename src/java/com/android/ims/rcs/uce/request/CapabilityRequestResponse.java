@@ -155,6 +155,22 @@ public class CapabilityRequestResponse {
         return mReasonHeaderText;
     }
 
+    public Optional<Integer> getResponseSipCode() {
+        if (mReasonHeaderCause.isPresent()) {
+            return mReasonHeaderCause;
+        } else {
+            return mNetworkRespSipCode;
+        }
+    }
+
+    public Optional<String> getResponseReason() {
+        if (mReasonPhrase.isPresent()) {
+            return mReasonPhrase;
+        } else {
+            return mReasonHeaderText;
+        }
+    }
+
     /**
      * Set the reason and retry-after info when the callback onTerminated is called.
      * @param reason The reason why this request is terminated.
@@ -163,6 +179,14 @@ public class CapabilityRequestResponse {
     public synchronized void setTerminated(String reason, long retryAfterMillis) {
         mTerminatedReason = Optional.ofNullable(reason);
         mRetryAfterMillis = Optional.of(retryAfterMillis);
+    }
+
+    /**
+     * @return The reason of terminating the subscription request. empty string if it has not
+     * been given.
+     */
+    public synchronized String getTerminatedReason() {
+        return mTerminatedReason.orElse("");
     }
 
     /**
@@ -259,26 +283,6 @@ public class CapabilityRequestResponse {
      */
     public synchronized Set<String> getRemoteCapability() {
         return Collections.unmodifiableSet(mRemoteCaps);
-    }
-
-    /**
-     * Get a copy of the this instance.
-     */
-    public synchronized CapabilityRequestResponse copy() {
-        CapabilityRequestResponse response = new CapabilityRequestResponse();
-        response.mRequestInternalError = mRequestInternalError;
-        response.mCommandError = mCommandError;
-        response.mNetworkRespSipCode = mNetworkRespSipCode;
-        response.mReasonPhrase = mReasonPhrase;
-        response.mReasonHeaderCause = mReasonHeaderCause;
-        response.mReasonHeaderText = mReasonHeaderText;
-        response.mTerminatedReason = mTerminatedReason;
-        response.mRetryAfterMillis = mRetryAfterMillis;
-        response.mTerminatedResource.addAll(mTerminatedResource);
-        response.mCachedCapabilityList.addAll(mCachedCapabilityList);
-        response.mUpdatedCapabilityList.addAll(mUpdatedCapabilityList);
-        response.mRemoteCaps.addAll(mRemoteCaps);
-        return response;
     }
 
     /**
@@ -380,38 +384,7 @@ public class CapabilityRequestResponse {
             sipError = response.getNetworkRespSipCode().orElse(-1);
             respReason = response.getReasonPhrase().orElse("");
         }
-        int uceError;
-        switch (sipError) {
-            case NetworkSipCode.SIP_CODE_FORBIDDEN:   // 403
-                if (NetworkSipCode.SIP_NOT_REGISTERED.equalsIgnoreCase(respReason)) {
-                    // Not registered with IMS. Device shall register to IMS.
-                    uceError = RcsUceAdapter.ERROR_NOT_REGISTERED;
-                } else if (NetworkSipCode.SIP_NOT_AUTHORIZED_FOR_PRESENCE.equalsIgnoreCase(
-                        respReason)) {
-                    // Not provisioned for EAB. Device shall not retry.
-                    uceError = RcsUceAdapter.ERROR_NOT_AUTHORIZED;
-                } else {
-                    // The network has responded SIP 403 error with no reason.
-                    uceError = RcsUceAdapter.ERROR_FORBIDDEN;
-                }
-                break;
-            case NetworkSipCode.SIP_CODE_REQUEST_TIMEOUT:        // 408
-                uceError = RcsUceAdapter.ERROR_REQUEST_TIMEOUT;
-                break;
-            case NetworkSipCode.SIP_CODE_INTERVAL_TOO_BRIEF:     // 423
-                // Rejected by the network because the requested expiry interval is too short.
-                uceError = RcsUceAdapter.ERROR_GENERIC_FAILURE;
-                break;
-            case NetworkSipCode.SIP_CODE_SERVER_INTERNAL_ERROR:  // 500
-            case NetworkSipCode.SIP_CODE_SERVICE_UNAVAILABLE:    // 503
-                // The network is temporarily unavailable or busy.
-                uceError = RcsUceAdapter.ERROR_SERVER_UNAVAILABLE;
-                break;
-            default:
-                uceError = RcsUceAdapter.ERROR_GENERIC_FAILURE;
-                break;
-        }
-        return uceError;
+        return NetworkSipCode.getCapabilityErrorFromSipCode(sipError, respReason);
     }
 
     @Override
