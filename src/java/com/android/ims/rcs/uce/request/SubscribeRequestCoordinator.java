@@ -118,7 +118,8 @@ public class SubscribeRequestCoordinator extends UceRequestCoordinator {
             requestMgrCallback) -> {
         // Check the given terminated reason to determine whether clients should retry or not.
         TerminatedResult terminatedResult = SubscriptionTerminatedHelper.getAnalysisResult(
-                response.getTerminatedReason(), response.getRetryAfterMillis());
+                response.getTerminatedReason(), response.getRetryAfterMillis(),
+                response.haveAllRequestCapsUpdatedBeenReceived());
         if (terminatedResult.getErrorCode().isPresent()) {
             // If the terminated error code is present, it means that the request is failed.
             int errorCode = terminatedResult.getErrorCode().get();
@@ -167,7 +168,9 @@ public class SubscribeRequestCoordinator extends UceRequestCoordinator {
             return;
         }
 
-        logd("onRequestUpdated: taskId=" + taskId + ", event=" + REQUEST_EVENT_DESC.get(event));
+        logd("onRequestUpdated(SubscribeRequest): taskId=" + taskId + ", event=" +
+                REQUEST_EVENT_DESC.get(event));
+
         switch (event) {
             case REQUEST_UPDATE_ERROR:
                 handleRequestError(request);
@@ -418,7 +421,7 @@ public class SubscribeRequestCoordinator extends UceRequestCoordinator {
             // Notify UceRequestManager to remove this instance from the collection.
             mRequestManagerCallback.notifyRequestCoordinatorFinished(mCoordinatorId);
 
-            logd("checkAndFinishRequestCoordinator: id=" + mCoordinatorId);
+            logd("checkAndFinishRequestCoordinator(SubscribeRequest) done, id=" + mCoordinatorId);
         }
     }
 
