@@ -16,22 +16,28 @@
 
 package com.android.ims.rcs.uce.request;
 
+import static android.telephony.ims.RcsContactUceCapability.SOURCE_TYPE_CACHED;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 import android.net.Uri;
 import android.telephony.ims.RcsContactUceCapability;
 import android.telephony.ims.RcsContactUceCapability.OptionsBuilder;
-import android.telephony.ims.aidl.IOptionsRequestCallback;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
 
 import com.android.ims.ImsTestBase;
+import com.android.ims.rcs.uce.request.RemoteOptionsRequest.RemoteOptResponse;
 import com.android.ims.rcs.uce.util.NetworkSipCode;
 import com.android.ims.rcs.uce.request.UceRequestManager.RequestManagerCallback;
 
@@ -55,11 +61,10 @@ public class RemoteOptionsRequestTest extends ImsTestBase {
             "+g.3gpp.iari-ref=\"urn%3Aurn-7%3A3gpp-application.ims.iari.rcs.fthttp\"";
 
     private int mSubId = 1;
-    private int mRequestType = UceRequest.REQUEST_TYPE_CAPABILITY;
+    private long mCoordId = 1L;
     private Uri mTestContact;
     private RcsContactUceCapability mDeviceCapability;
 
-    @Mock IOptionsRequestCallback mCallback;
     @Mock RequestManagerCallback mRequestManagerCallback;
 
     @Before
@@ -71,7 +76,7 @@ public class RemoteOptionsRequestTest extends ImsTestBase {
         featureTags.add(FEATURE_TAG_CHAT);
         featureTags.add(FEATURE_TAG_FILE_TRANSFER);
 
-        OptionsBuilder builder = new OptionsBuilder(mTestContact);
+        OptionsBuilder builder = new OptionsBuilder(mTestContact, SOURCE_TYPE_CACHED);
         builder.addFeatureTag(FEATURE_TAG_CHAT);
         builder.addFeatureTag(FEATURE_TAG_FILE_TRANSFER);
         mDeviceCapability = builder.build();
@@ -90,12 +95,17 @@ public class RemoteOptionsRequestTest extends ImsTestBase {
         RemoteOptionsRequest request = getRequest();
         List<String> featureTags = Arrays.asList(FEATURE_TAG_CHAT, FEATURE_TAG_FILE_TRANSFER);
         request.setRemoteFeatureTags(featureTags);
+        request.setIsRemoteNumberBlocked(false);
 
         request.executeRequest();
 
-        verify(mCallback).respondToCapabilityRequest(mDeviceCapability, false /*isBlocked*/);
         verify(mRequestManagerCallback).saveCapabilities(any());
-        verify(mRequestManagerCallback).onRequestFinished(anyLong());
+
+        RemoteOptResponse response = request.getRemoteOptResponse();
+        assertEquals(mDeviceCapability, response.getRcsContactCapability());
+        assertFalse(response.isNumberBlocked());
+
+        verify(mRequestManagerCallback).notifyRemoteRequestDone(eq(mCoordId), anyLong());
     }
 
     @Test
@@ -108,9 +118,13 @@ public class RemoteOptionsRequestTest extends ImsTestBase {
 
         request.executeRequest();
 
-        verify(mCallback).respondToCapabilityRequest(mDeviceCapability, true /*isBlocked*/);
         verify(mRequestManagerCallback).saveCapabilities(any());
-        verify(mRequestManagerCallback).onRequestFinished(anyLong());
+
+        RemoteOptResponse response = request.getRemoteOptResponse();
+        assertEquals(mDeviceCapability, response.getRcsContactCapability());
+        assertTrue(response.isNumberBlocked());
+
+        verify(mRequestManagerCallback).notifyRemoteRequestDone(eq(mCoordId), anyLong());
     }
 
     @Test
@@ -121,14 +135,19 @@ public class RemoteOptionsRequestTest extends ImsTestBase {
 
         request.executeRequest();
 
-        verify(mCallback).respondToCapabilityRequestWithError(
-                NetworkSipCode.SIP_CODE_SERVICE_UNAVAILABLE,
-                NetworkSipCode.SIP_SERVICE_UNAVAILABLE);
+        RemoteOptResponse response = request.getRemoteOptResponse();
+        int errorSipCode = response.getErrorSipCode().orElse(-1);
+        String reason = response.getErrorReason().orElse("");
+        assertEquals(NetworkSipCode.SIP_CODE_SERVICE_UNAVAILABLE, errorSipCode);
+        assertEquals(NetworkSipCode.SIP_SERVICE_UNAVAILABLE, reason);
+
+        verify(mRequestManagerCallback).notifyRemoteRequestDone(eq(mCoordId), anyLong());
+        verify(mRequestManagerCallback, never()).saveCapabilities(any());
     }
 
     private RemoteOptionsRequest getRequest() {
-        RemoteOptionsRequest request =
-                new RemoteOptionsRequest(mSubId, mRequestType, mRequestManagerCallback, mCallback);
+        RemoteOptionsRequest request = new RemoteOptionsRequest(mSubId, mRequestManagerCallback);
+        request.setRequestCoordinatorId(mCoordId);
         request.setContactUri(Collections.singletonList(mTestContact));
         return request;
     }
