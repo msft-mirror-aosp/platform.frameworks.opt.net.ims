@@ -37,7 +37,6 @@ import com.android.ims.ImsTestBase;
 import com.android.ims.rcs.uce.request.RemoteOptionsRequest.RemoteOptResponse;
 import com.android.ims.rcs.uce.request.UceRequestCoordinator.RequestResult;
 import com.android.ims.rcs.uce.request.UceRequestManager.RequestManagerCallback;
-import com.android.ims.rcs.uce.UceStatsWriter;
 
 import java.util.Collection;
 import java.util.Collections;
@@ -55,7 +54,6 @@ public class RemoteOptionsCoordinatorTest extends ImsTestBase {
     @Mock RemoteOptResponse mResponse;
     @Mock RequestManagerCallback mRequestMgrCallback;
     @Mock IOptionsRequestCallback mOptRequestCallback;
-    @Mock UceStatsWriter mUceStatsWriter;
 
     private int mSubId = 1;
     private long mTaskId = 1L;
@@ -86,8 +84,6 @@ public class RemoteOptionsCoordinatorTest extends ImsTestBase {
         verify(mOptRequestCallback).respondToCapabilityRequest(updatedCapability, true);
 
         verify(mRequest).onFinish();
-        verify(mUceStatsWriter).setUceEvent(eq(mSubId), eq(UceStatsWriter.INCOMING_OPTION_EVENT),
-            eq(true), eq(0), eq(200));
 
         Collection<UceRequest> requestList = coordinator.getActivatedRequest();
         Collection<RequestResult> resultList = coordinator.getFinishedRequest();
@@ -98,7 +94,7 @@ public class RemoteOptionsCoordinatorTest extends ImsTestBase {
 
     private RemoteOptionsCoordinator getRemoteOptCoordinator() {
         RemoteOptionsCoordinator.Builder builder = new RemoteOptionsCoordinator.Builder(
-                mSubId, Collections.singletonList(mRequest), mRequestMgrCallback, mUceStatsWriter);
+                mSubId, Collections.singletonList(mRequest), mRequestMgrCallback);
         builder.setOptionsRequestCallback(mOptRequestCallback);
         return builder.build();
     }

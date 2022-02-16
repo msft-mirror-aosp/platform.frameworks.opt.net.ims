@@ -22,8 +22,6 @@ import android.annotation.NonNull;
 import android.content.Context;
 import android.os.RemoteException;
 import android.telephony.ims.RcsContactUceCapability;
-import android.telephony.ims.stub.ImsRegistrationImplBase;
-import android.telephony.ims.stub.RcsCapabilityExchangeImplBase;
 import android.text.TextUtils;
 import android.util.IndentingPrintWriter;
 import android.util.LocalLog;
@@ -33,7 +31,6 @@ import com.android.ims.RcsFeatureManager;
 import com.android.ims.rcs.uce.presence.pidfparser.PidfParser;
 import com.android.ims.rcs.uce.presence.publish.PublishController.PublishControllerCallback;
 import com.android.ims.rcs.uce.presence.publish.PublishController.PublishTriggerType;
-import com.android.ims.rcs.uce.UceStatsWriter;
 import com.android.ims.rcs.uce.util.UceUtils;
 import com.android.internal.annotations.VisibleForTesting;
 
@@ -56,8 +53,6 @@ public class PublishProcessor {
     private volatile boolean mIsDestroyed;
     private volatile RcsFeatureManager mRcsFeatureManager;
 
-    private final UceStatsWriter mUceStatsWriter;
-
     // Manage the state of the publish processor.
     private PublishProcessorState mProcessorState;
 
@@ -79,18 +74,6 @@ public class PublishProcessor {
         mDeviceCapabilities = capabilityInfo;
         mPublishCtrlCallback = publishCtrlCallback;
         mProcessorState = new PublishProcessorState(subId);
-        mUceStatsWriter = UceStatsWriter.getInstance();
-    }
-
-    @VisibleForTesting
-    public PublishProcessor(Context context, int subId, DeviceCapabilityInfo capabilityInfo,
-            PublishControllerCallback publishCtrlCallback, UceStatsWriter instance) {
-        mSubId = subId;
-        mContext = context;
-        mDeviceCapabilities = capabilityInfo;
-        mPublishCtrlCallback = publishCtrlCallback;
-        mProcessorState = new PublishProcessorState(subId);
-        mUceStatsWriter = instance;
     }
 
     /**
@@ -175,13 +158,6 @@ public class PublishProcessor {
             return false;
         }
 
-        featureManager.getImsRegistrationTech((tech) -> {
-            int registrationTech = (tech == null)
-                    ? ImsRegistrationImplBase.REGISTRATION_TECH_NONE : tech;
-            mUceStatsWriter.setImsRegistrationServiceDescStats(mSubId,
-                    deviceCapability.getCapabilityTuples(), registrationTech);
-        });
-
         // Publish to the Presence server.
         return publishCapabilities(featureManager, pidfXml);
     }
@@ -241,9 +217,6 @@ public class PublishProcessor {
 
             // Send a request canceled timer to avoid waiting too long for the response callback.
             mPublishCtrlCallback.setupRequestCanceledTimer(taskId, RESPONSE_CALLBACK_WAITING_TIME);
-
-            // Inform that the publish request has been sent to the Ims Service.
-            mPublishCtrlCallback.notifyPendingPublishRequest();
             return true;
         } catch (RemoteException e) {
             mLocalLog.log("publish capability exception: " + e.getMessage());
@@ -271,13 +244,6 @@ public class PublishProcessor {
         mLocalLog.log("Receive command error code=" + requestResponse.getCmdErrorCode());
         logd("onCommandError: " + requestResponse.toString());
 
-        int cmdError = requestResponse.getCmdErrorCode().orElse(0);
-        boolean successful = false;
-        if (cmdError == RcsCapabilityExchangeImplBase.COMMAND_CODE_NO_CHANGE) {
-            successful = true;
-        }
-        mUceStatsWriter.setUceEvent(mSubId, UceStatsWriter.PUBLISH_EVENT, successful, cmdError, 0);
-
         if (requestResponse.needRetry() && !mProcessorState.isReachMaximumRetries()) {
             handleRequestRespWithRetry(requestResponse);
         } else {
@@ -300,10 +266,6 @@ public class PublishProcessor {
 
         mLocalLog.log("Receive network response code=" + requestResponse.getNetworkRespSipCode());
         logd("onNetworkResponse: " + requestResponse.toString());
-
-        int responseCode = requestResponse.getNetworkRespSipCode().orElse(0);
-        mUceStatsWriter.setUceEvent(mSubId, UceStatsWriter.PUBLISH_EVENT, true, 0,
-            responseCode);
 
         if (requestResponse.needRetry() && !mProcessorState.isReachMaximumRetries()) {
             handleRequestRespWithRetry(requestResponse);
@@ -362,32 +324,28 @@ public class PublishProcessor {
      * request response and it does not need to retry.
      */
     private void handleRequestRespWithoutRetry(PublishRequestResponse requestResponse) {
-        updatePublishStateFromResponse(requestResponse);
-        // Finish the request and check if there is pending request.
-        setRequestEnded(requestResponse);
-        checkAndSendPendingRequest();
-    }
-
-    // After checking the response, it handles calling PublishCtrlCallback.
-    private void updatePublishStateFromResponse(PublishRequestResponse response) {
-        Instant responseTime = response.getResponseTimestamp();
+        Instant responseTime = requestResponse.getResponseTimestamp();
 
         // Record the time when the request is successful and reset the retry count.
-        if (response.isRequestSuccess()) {
+        if (requestResponse.isRequestSuccess()) {
             mProcessorState.setLastPublishedTime(responseTime);
             mProcessorState.resetRetryCount();
         }
 
         // Update the publish state after the request has finished.
-        int publishState = response.getPublishState();
-        String pidfXml = response.getPidfXml();
+        int publishState = requestResponse.getPublishState();
+        String pidfXml = requestResponse.getPidfXml();
         mPublishCtrlCallback.updatePublishRequestResult(publishState, responseTime, pidfXml);
 
         // Refresh the device state with the publish request result.
-        response.getResponseSipCode().ifPresent(sipCode -> {
-            String reason = response.getResponseReason().orElse("");
+        requestResponse.getResponseSipCode().ifPresent(sipCode -> {
+            String reason = requestResponse.getResponseReason().orElse("");
             mPublishCtrlCallback.refreshDeviceState(sipCode, reason);
         });
+
+        // Finish the request and check if there is pending request.
+        setRequestEnded(requestResponse);
+        checkAndSendPendingRequest();
     }
 
     /**
@@ -485,23 +443,6 @@ public class PublishProcessor {
      */
     public boolean isPublishingNow() {
         return mProcessorState.isPublishingNow();
-    }
-
-    /**
-     * Reset the retry count and time related publish.
-     */
-    public void resetState() {
-        mProcessorState.resetState();
-    }
-
-    /**
-     * Update publish status after handling on onPublishUpdate case
-     */
-    public void publishUpdated(PublishRequestResponse response) {
-        updatePublishStateFromResponse(response);
-        if (response != null) {
-            response.onDestroy();
-        }
     }
 
     @VisibleForTesting
