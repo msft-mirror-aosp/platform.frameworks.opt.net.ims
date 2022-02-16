@@ -25,7 +25,6 @@ import android.telephony.ims.aidl.IOptionsRequestCallback;
 
 import com.android.ims.rcs.uce.request.RemoteOptionsRequest.RemoteOptResponse;
 import com.android.ims.rcs.uce.request.UceRequestManager.RequestManagerCallback;
-import com.android.ims.rcs.uce.UceStatsWriter;
 import com.android.internal.annotations.VisibleForTesting;
 
 import java.util.Collection;
@@ -42,13 +41,7 @@ public class RemoteOptionsCoordinator extends UceRequestCoordinator {
         RemoteOptionsCoordinator mRemoteOptionsCoordinator;
 
         public Builder(int subId, Collection<UceRequest> requests, RequestManagerCallback c) {
-            mRemoteOptionsCoordinator = new RemoteOptionsCoordinator(subId, requests, c,
-                    UceStatsWriter.getInstance());
-        }
-        @VisibleForTesting
-        public Builder(int subId, Collection<UceRequest> requests, RequestManagerCallback c,
-                UceStatsWriter instance) {
-            mRemoteOptionsCoordinator = new RemoteOptionsCoordinator(subId, requests, c, instance);
+            mRemoteOptionsCoordinator = new RemoteOptionsCoordinator(subId, requests, c);
         }
 
         public Builder setOptionsRequestCallback(IOptionsRequestCallback callback) {
@@ -85,12 +78,9 @@ public class RemoteOptionsCoordinator extends UceRequestCoordinator {
     // The callback to notify the result of the remote options request.
     private IOptionsRequestCallback mOptionsReqCallback;
 
-    private final UceStatsWriter mUceStatsWriter;
-
     private RemoteOptionsCoordinator(int subId, Collection<UceRequest> requests,
-            RequestManagerCallback requestMgrCallback, UceStatsWriter instance) {
+            RequestManagerCallback requestMgrCallback) {
         super(subId, requests, requestMgrCallback);
-        mUceStatsWriter = instance;
         logd("RemoteOptionsCoordinator: created");
     }
 
@@ -154,9 +144,6 @@ public class RemoteOptionsCoordinator extends UceRequestCoordinator {
             boolean isRemoteNumberBlocked) {
         try {
             logd("triggerOptionsReqCallback: start");
-            mUceStatsWriter.setUceEvent(mSubId, UceStatsWriter.INCOMING_OPTION_EVENT, true, 0,
-                200);
-
             mOptionsReqCallback.respondToCapabilityRequest(deviceCaps, isRemoteNumberBlocked);
         } catch (RemoteException e) {
             logw("triggerOptionsReqCallback exception: " + e);
@@ -168,9 +155,6 @@ public class RemoteOptionsCoordinator extends UceRequestCoordinator {
     private void triggerOptionsReqWithErrorCallback(int errorCode, String reason) {
         try {
             logd("triggerOptionsReqWithErrorCallback: start");
-            mUceStatsWriter.setUceEvent(mSubId, UceStatsWriter.INCOMING_OPTION_EVENT, true, 0,
-                errorCode);
-
             mOptionsReqCallback.respondToCapabilityRequestWithError(errorCode, reason);
         } catch (RemoteException e) {
             logw("triggerOptionsReqWithErrorCallback exception: " + e);

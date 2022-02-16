@@ -104,7 +104,7 @@ public class FeatureConnector<U extends FeatureUpdates> {
         /**
          * ImsFeature manager is connected to the underlying IMS implementation.
          */
-        void connectionReady(U manager, int subId) throws ImsException;
+        void connectionReady(U manager) throws ImsException;
 
         /**
          * The underlying IMS implementation is unavailable and can not be used to communicate.
@@ -115,15 +115,15 @@ public class FeatureConnector<U extends FeatureUpdates> {
     private final IImsServiceFeatureCallback mCallback = new IImsServiceFeatureCallback.Stub() {
 
         @Override
-        public void imsFeatureCreated(ImsFeatureContainer c, int subId) {
-            log("imsFeatureCreated: " + c + ", subId: " + subId);
+        public void imsFeatureCreated(ImsFeatureContainer c) {
+            log("imsFeatureCreated: " + c);
             synchronized (mLock) {
-                mManager.associate(c, subId);
+                mManager.associate(c);
                 mManager.updateFeatureCapabilities(c.getCapabilities());
                 mDisconnectedReason = null;
             }
             // Notifies executor, so notify outside of lock
-            imsStatusChanged(c.getState(), subId);
+            imsStatusChanged(c.getState());
         }
 
         @Override
@@ -151,7 +151,7 @@ public class FeatureConnector<U extends FeatureUpdates> {
         }
 
         @Override
-        public void imsStatusChanged(int status, int subId) {
+        public void imsStatusChanged(int status) {
             log("imsStatusChanged: status=" + ImsFeature.STATE_LOG_MAP.get(status));
             final U manager;
             final boolean isReady;
@@ -173,7 +173,7 @@ public class FeatureConnector<U extends FeatureUpdates> {
             mExecutor.execute(() -> {
                 try {
                     if (isReady) {
-                        notifyReady(manager, subId);
+                        notifyReady(manager);
                     } else {
                         notifyNotReady();
                     }
@@ -282,10 +282,10 @@ public class FeatureConnector<U extends FeatureUpdates> {
     }
 
     // Should be called on executor
-    private void notifyReady(U manager, int subId) throws ImsException {
+    private void notifyReady(U manager) throws ImsException {
         try {
             if (DBG) log("notifyReady");
-            mListener.connectionReady(manager, subId);
+            mListener.connectionReady(manager);
         }
         catch (ImsException e) {
             if(DBG) log("notifyReady exception: " + e.getMessage());
