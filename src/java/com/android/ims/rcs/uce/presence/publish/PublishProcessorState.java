@@ -348,16 +348,6 @@ public class PublishProcessorState {
         }
     }
 
-    /**
-     * Reset the retry count and related time when the publication status has
-     * changed to not_published.
-     */
-    public void resetState() {
-        synchronized (mLock) {
-            mPublishThrottle.resetState();
-        }
-    }
-
     /*
      * Check if it has reached the maximum retry count.
      */

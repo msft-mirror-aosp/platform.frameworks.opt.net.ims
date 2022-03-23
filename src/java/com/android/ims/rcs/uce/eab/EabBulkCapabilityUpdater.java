@@ -59,6 +59,7 @@ public final class EabBulkCapabilityUpdater {
     private final AlarmManager.OnAlarmListener mCapabilityExpiredListener;
     private final ContactChangedListener mContactProviderListener;
     private final EabSettingsListener mEabSettingListener;
+    private final BroadcastReceiver mCarrierConfigChangedListener;
     private final EabControllerImpl mEabControllerImpl;
     private final EabContactSyncController mEabContactSyncController;
 
@@ -134,6 +135,28 @@ public final class EabBulkCapabilityUpdater {
         }
     }
 
+    /**
+     * Listen carrier config changed to prevent this instance created before carrier config loaded.
+     */
+    private class CarrierConfigChangedListener extends BroadcastReceiver {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            boolean isSupportBulkCapabilityExchange = getBooleanCarrierConfig(
+                CarrierConfigManager.Ims.KEY_RCS_BULK_CAPABILITY_EXCHANGE_BOOL, mSubId);
+
+            Log.d(TAG, "Carrier config changed. "
+                    + "isCarrierConfigEnabled: " + mIsCarrierConfigEnabled
+                    + ", isSupportBulkCapabilityExchange: " + isSupportBulkCapabilityExchange);
+            if (!mIsCarrierConfigEnabled && isSupportBulkCapabilityExchange) {
+                enableBulkCapability();
+                updateExpiredTimeAlert();
+                mIsCarrierConfigEnabled = true;
+            } else if (mIsCarrierConfigEnabled && !isSupportBulkCapabilityExchange) {
+                onDestroy();
+            }
+        }
+    }
+
     private IRcsUceControllerCallback mRcsUceControllerCallback = new IRcsUceControllerCallback() {
         @Override
         public void onCapabilitiesReceived(List<RcsContactUceCapability> contactCapabilities) {
@@ -204,6 +227,7 @@ public final class EabBulkCapabilityUpdater {
         mContactProviderListener = new ContactChangedListener(mHandler);
         mEabSettingListener = new EabSettingsListener(mHandler);
         mCapabilityExpiredListener = new CapabilityExpiredListener();
+        mCarrierConfigChangedListener = new CarrierConfigChangedListener();
 
         Log.d(TAG, "create EabBulkCapabilityUpdater() subId: " + mSubId);
 
@@ -226,6 +250,7 @@ public final class EabBulkCapabilityUpdater {
             registerEabUserSettingsListener();
             mIsCarrierConfigEnabled = false;
         } else {
+            registerCarrierConfigChanged();
             Log.d(TAG, "Not support bulk capability exchange.");
         }
     }
@@ -396,6 +421,7 @@ public final class EabBulkCapabilityUpdater {
         cancelTimeAlert(mContext);
         unRegisterContactProviderListener();
         unRegisterEabUserSettings();
+        unRegisterCarrierConfigChanged();
     }
 
     private void registerContactProviderListener() {
@@ -416,6 +442,14 @@ public final class EabBulkCapabilityUpdater {
                 mEabSettingListener);
     }
 
+    private void registerCarrierConfigChanged() {
+        Log.d(TAG, "registerCarrierConfigChanged");
+        mIsCarrierConfigListenerRegistered = true;
+        IntentFilter FILTER_CARRIER_CONFIG_CHANGED =
+                new IntentFilter(CarrierConfigManager.ACTION_CARRIER_CONFIG_CHANGED);
+        mContext.registerReceiver(mCarrierConfigChangedListener, FILTER_CARRIER_CONFIG_CHANGED);
+    }
+
     private void unRegisterContactProviderListener() {
         Log.d(TAG, "unRegisterContactProviderListener");
         if (mIsContactProviderListenerRegistered) {
@@ -432,23 +466,15 @@ public final class EabBulkCapabilityUpdater {
         }
     }
 
-    public void setUceRequestCallback(UceController.UceControllerCallback uceControllerCallback) {
-        mUceControllerCallback = uceControllerCallback;
+    private void unRegisterCarrierConfigChanged() {
+        Log.d(TAG, "unregisterCarrierConfigChanged");
+        if (mIsCarrierConfigListenerRegistered) {
+            mIsCarrierConfigListenerRegistered = false;
+            mContext.unregisterReceiver(mCarrierConfigChangedListener);
+        }
     }
 
-    public void onCarrierConfigChanged() {
-        boolean isSupportBulkCapabilityExchange = getBooleanCarrierConfig(
-                CarrierConfigManager.Ims.KEY_RCS_BULK_CAPABILITY_EXCHANGE_BOOL, mSubId);
-
-        Log.d(TAG, "Carrier config changed. "
-                + "isCarrierConfigEnabled: " + mIsCarrierConfigEnabled
-                + ", isSupportBulkCapabilityExchange: " + isSupportBulkCapabilityExchange);
-        if (!mIsCarrierConfigEnabled && isSupportBulkCapabilityExchange) {
-            enableBulkCapability();
-            updateExpiredTimeAlert();
-            mIsCarrierConfigEnabled = true;
-        } else if (mIsCarrierConfigEnabled && !isSupportBulkCapabilityExchange) {
-            onDestroy();
-        }
+    public void setUceRequestCallback(UceController.UceControllerCallback uceControllerCallback) {
+        mUceControllerCallback = uceControllerCallback;
     }
 }
