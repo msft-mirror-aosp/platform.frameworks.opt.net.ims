@@ -17,10 +17,10 @@
 package com.android.ims;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.anyInt;
-import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -31,8 +31,6 @@ import android.content.pm.PackageManager;
 import android.content.res.Resources;
 import android.os.IBinder;
 import android.os.PersistableBundle;
-import android.os.RemoteException;
-import android.telephony.BinderCacheManager;
 import android.telephony.CarrierConfigManager;
 import android.telephony.SubscriptionManager;
 import android.telephony.ims.ImsMmTelManager;
@@ -44,12 +42,10 @@ import android.telephony.ims.feature.MmTelFeature;
 import android.telephony.ims.stub.ImsConfigImplBase;
 import android.telephony.ims.stub.ImsRegistrationImplBase;
 
-import androidx.test.InstrumentationRegistry;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
 
 import com.android.internal.os.SomeArgs;
-import com.android.internal.telephony.ITelephony;
 
 import org.junit.After;
 import org.junit.Before;
@@ -58,7 +54,6 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 
 import java.util.Hashtable;
-import java.util.concurrent.Executor;
 
 @RunWith(AndroidJUnit4.class)
 public class ImsManagerTest extends ImsTestBase {
@@ -89,8 +84,6 @@ public class ImsManagerTest extends ImsTestBase {
     @Mock ISipTransport mSipTransport;
     @Mock ImsManager.SubscriptionManagerProxy mSubscriptionManagerProxy;
     @Mock ImsManager.SettingsProxy mSettingsProxy;
-    @Mock BinderCacheManager mBinderCacheManager;
-    @Mock ITelephony mITelephony;
 
     private final int[] mSubId = {0};
     private final int mPhoneId = 1;
@@ -103,32 +96,22 @@ public class ImsManagerTest extends ImsTestBase {
         doReturn(null).when(mContext).getMainLooper();
 
         doReturn(true).when(mMmTelFeatureConnection).isBinderAlive();
-        doReturn(mSubId[0]).when(mMmTelFeatureConnection).getSubId();
         mContextFixture.addSystemFeature(PackageManager.FEATURE_TELEPHONY_IMS);
 
         doReturn(true).when(mSubscriptionManagerProxy).isValidSubscriptionId(anyInt());
+        doReturn(mSubId).when(mSubscriptionManagerProxy).getSubscriptionIds(eq(mPhoneId));
         doReturn(mSubId).when(mSubscriptionManagerProxy).getActiveSubscriptionIdList();
-        doReturn(mSubId).when(mSubscriptionManagerProxy).getSubscriptionIds(anyInt());
         doReturn(mPhoneId).when(mSubscriptionManagerProxy).getDefaultVoicePhoneId();
         doReturn(-1).when(mSubscriptionManagerProxy).getIntegerSubscriptionProperty(anyInt(),
                 anyString(), anyInt());
 
 
         setDefaultValues();
-
-        // allow READ_PRIVILEGED_PHONE_STATE permission
-        InstrumentationRegistry.getInstrumentation().getUiAutomation()
-                .adoptShellPermissionIdentity(
-                        "android.permission.READ_PRIVILEGED_PHONE_STATE");
     }
 
     @After
     public void tearDown() throws Exception {
         super.tearDown();
-
-        // release permission
-        InstrumentationRegistry.getInstrumentation().getUiAutomation()
-                .dropShellPermissionIdentity();
     }
 
     private void setDefaultValues() {
@@ -263,53 +246,39 @@ public class ImsManagerTest extends ImsTestBase {
                 eq(SubscriptionManager.WFC_IMS_ENABLED),
                 eq("1"));
     }
-
     @Test
     public void testGetProvisionedValues() throws Exception {
         ImsManager imsManager = getImsManagerAndInitProvisionedValues();
 
         assertEquals(true, imsManager.isWfcProvisionedOnDevice());
-        verify(mITelephony, times(1)).getImsProvisioningInt(
-                anyInt(),
-                eq(ProvisioningManager.KEY_VOICE_OVER_WIFI_ENABLED_OVERRIDE));
-        clearInvocations(mITelephony);
+        verify(mImsConfigImplBaseMock, times(1)).getConfigInt(
+                eq(ImsConfig.ConfigConstants.VOICE_OVER_WIFI_SETTING_ENABLED));
 
         assertEquals(true, imsManager.isVtProvisionedOnDevice());
-        verify(mITelephony, times(1)).getImsProvisioningInt(
-                anyInt(),
-                eq(ProvisioningManager.KEY_VT_PROVISIONING_STATUS));
-        clearInvocations(mITelephony);
+        verify(mImsConfigImplBaseMock, times(1)).getConfigInt(
+                eq(ImsConfig.ConfigConstants.LVC_SETTING_ENABLED));
 
         assertEquals(true, imsManager.isVolteProvisionedOnDevice());
-        verify(mITelephony, times(1)).getImsProvisioningInt(
-                anyInt(),
-                eq(ProvisioningManager.KEY_VOLTE_PROVISIONING_STATUS));
-        clearInvocations(mITelephony);
+        verify(mImsConfigImplBaseMock, times(1)).getConfigInt(
+                eq(ImsConfig.ConfigConstants.VLT_SETTING_ENABLED));
 
         // If we call get again, times should still be one because the value should be fetched
         // from cache.
         assertEquals(true, imsManager.isWfcProvisionedOnDevice());
-        verify(mITelephony, times(1)).getImsProvisioningInt(
-                anyInt(),
-                eq(ProvisioningManager.KEY_VOICE_OVER_WIFI_ENABLED_OVERRIDE));
-        clearInvocations(mITelephony);
+        verify(mImsConfigImplBaseMock, times(1)).getConfigInt(
+                eq(ImsConfig.ConfigConstants.VOICE_OVER_WIFI_SETTING_ENABLED));
 
         assertEquals(true, imsManager.isVtProvisionedOnDevice());
-        verify(mITelephony, times(1)).getImsProvisioningInt(
-                anyInt(),
-                eq(ProvisioningManager.KEY_VT_PROVISIONING_STATUS));
-        clearInvocations(mITelephony);
+        verify(mImsConfigImplBaseMock, times(1)).getConfigInt(
+                eq(ImsConfig.ConfigConstants.LVC_SETTING_ENABLED));
 
         assertEquals(true, imsManager.isVolteProvisionedOnDevice());
-        verify(mITelephony, times(1)).getImsProvisioningInt(
-                anyInt(),
-                eq(ProvisioningManager.KEY_VOLTE_PROVISIONING_STATUS));
-        clearInvocations(mITelephony);
+        verify(mImsConfigImplBaseMock, times(1)).getConfigInt(
+                eq(ImsConfig.ConfigConstants.VLT_SETTING_ENABLED));
 
         assertEquals(true, imsManager.isEabProvisionedOnDevice());
-        verify(mITelephony, times(1)).getImsProvisioningInt(
-                anyInt(),
-                eq(ProvisioningManager.KEY_EAB_PROVISIONING_STATUS));
+        verify(mImsConfigImplBaseMock, times(1)).getConfigInt(
+                eq(ImsConfig.ConfigConstants.EAB_SETTING_ENABLED));
     }
 
     @Test
@@ -317,10 +286,8 @@ public class ImsManagerTest extends ImsTestBase {
         ImsManager imsManager = getImsManagerAndInitProvisionedValues();
 
         assertEquals(true, imsManager.isWfcProvisionedOnDevice());
-
-        verify(mITelephony, times(1)).getImsProvisioningInt(
-                anyInt(), eq(ProvisioningManager.KEY_VOICE_OVER_WIFI_ENABLED_OVERRIDE));
-        clearInvocations(mITelephony);
+        verify(mImsConfigImplBaseMock, times(1)).getConfigInt(
+                eq(ImsConfig.ConfigConstants.VOICE_OVER_WIFI_SETTING_ENABLED));
 
         imsManager.getConfigInterface().setProvisionedValue(
                 ImsConfig.ConfigConstants.VOICE_OVER_WIFI_SETTING_ENABLED,
@@ -334,10 +301,8 @@ public class ImsManagerTest extends ImsTestBase {
         verify(mImsConfigImplBaseMock, times(1)).setConfig(
                 eq(ImsConfig.ConfigConstants.VOICE_OVER_WIFI_SETTING_ENABLED),
                 eq(0));
-
-        verify(mITelephony, times(1)).getImsProvisioningInt(
-                anyInt(),
-                eq(ProvisioningManager.KEY_VOICE_OVER_WIFI_ENABLED_OVERRIDE));
+        verify(mImsConfigImplBaseMock, times(1)).getConfigInt(
+                eq(ImsConfig.ConfigConstants.VOICE_OVER_WIFI_SETTING_ENABLED));
     }
 
     @Test
@@ -345,11 +310,8 @@ public class ImsManagerTest extends ImsTestBase {
         ImsManager imsManager = getImsManagerAndInitProvisionedValues();
 
         assertEquals(true, imsManager.isEabProvisionedOnDevice());
-
-        verify(mITelephony, times(1)).getImsProvisioningInt(
-                anyInt(), eq(ProvisioningManager.KEY_EAB_PROVISIONING_STATUS));
-
-        clearInvocations(mITelephony);
+        verify(mImsConfigImplBaseMock, times(1)).getConfigInt(
+                eq(ImsConfig.ConfigConstants.EAB_SETTING_ENABLED));
 
         imsManager.getConfigInterface().setProvisionedValue(
                 ImsConfig.ConfigConstants.EAB_SETTING_ENABLED,
@@ -363,9 +325,8 @@ public class ImsManagerTest extends ImsTestBase {
         verify(mImsConfigImplBaseMock, times(1)).setConfig(
                 eq(ImsConfig.ConfigConstants.EAB_SETTING_ENABLED),
                 eq(0));
-
-        verify(mITelephony, times(1)).getImsProvisioningInt(
-                anyInt(), eq(ProvisioningManager.KEY_EAB_PROVISIONING_STATUS));
+        verify(mImsConfigImplBaseMock, times(1)).getConfigInt(
+                eq(ImsConfig.ConfigConstants.EAB_SETTING_ENABLED));
     }
 
     /**
@@ -908,31 +869,15 @@ public class ImsManagerTest extends ImsTestBase {
 
 
         // Configure ImsConfigStub
-        mImsConfigStub = new ImsConfigImplBase.ImsConfigStub(mImsConfigImplBaseMock, Runnable::run);
+        mImsConfigStub = new ImsConfigImplBase.ImsConfigStub(mImsConfigImplBaseMock);
         doReturn(mImsConfigStub).when(mMmTelFeatureConnection).getConfig();
 
-        when(mBinderCacheManager.getBinder())
-                .thenReturn(mITelephony);
-
-        try {
-            when(mITelephony.getImsProvisioningInt(anyInt(), anyInt()))
-                    .thenAnswer(invocation -> {
-                        return getProvisionedInt((Integer) (invocation.getArguments()[1]));
-                    });
-            when(mITelephony.setImsProvisioningInt(anyInt(), anyInt(), anyInt()))
-                    .thenAnswer(invocation -> {
-                        mProvisionedIntVals.put((Integer) (invocation.getArguments()[1]),
-                                (Integer) (invocation.getArguments()[2]));
-                        return ImsConfig.OperationStatusConstants.SUCCESS;
-                    });
-        } catch (RemoteException e) {}
-
         ImsManager mgr = new ImsManager(mContext, mPhoneId,
-                (context, phoneId, subId, feature, c, r, s) -> mMmTelFeatureConnection,
-                mSubscriptionManagerProxy, mSettingsProxy, mBinderCacheManager);
+                (context, phoneId, feature, c, r, s) -> mMmTelFeatureConnection,
+                mSubscriptionManagerProxy, mSettingsProxy);
         ImsFeatureContainer c = new ImsFeatureContainer(mMmTelFeature, mImsConfig, mImsReg,
                 mSipTransport, 0 /*caps*/);
-        mgr.associate(c, mSubId[0]);
+        mgr.associate(c);
         // Enabled WFC by default
         setWfcEnabledByPlatform(true);
         return mgr;

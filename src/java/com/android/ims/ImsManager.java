@@ -20,14 +20,10 @@ import static android.telephony.ims.ProvisioningManager.KEY_VOIMS_OPT_IN_STATUS;
 
 import android.annotation.NonNull;
 import android.app.PendingIntent;
-import android.app.compat.CompatChanges;
-import android.compat.annotation.ChangeId;
-import android.compat.annotation.EnabledSince;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.pm.PackageManager;
-import android.os.Binder;
 import android.os.Build;
 import android.os.Message;
 import android.os.PersistableBundle;
@@ -240,8 +236,8 @@ public class ImsManager implements FeatureUpdates {
 
     @VisibleForTesting
     public interface MmTelFeatureConnectionFactory {
-        MmTelFeatureConnection create(Context context, int phoneId, int subId,
-                IImsMmTelFeature feature, IImsConfig c, IImsRegistration r, ISipTransport s);
+        MmTelFeatureConnection create(Context context, int phoneId, IImsMmTelFeature feature,
+                IImsConfig c, IImsRegistration r, ISipTransport s);
     }
 
     @VisibleForTesting
@@ -394,18 +390,15 @@ public class ImsManager implements FeatureUpdates {
             try {
                 // If this is during initial reconnect, let all threads wait for connect
                 // (or timeout)
-                if(!mConnectedLatch.await(CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-                    mImsManager.log("ImsService not up yet - timeout waiting for connection.");
-                }
+                mConnectedLatch.await(CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
             } catch (InterruptedException e) {
                 // Do nothing and allow ImsService to attach behind the scenes
             }
         }
 
         @Override
-        public void connectionReady(ImsManager manager, int subId) {
+        public void connectionReady(ImsManager manager) {
             synchronized (mLock) {
-                mImsManager.logi("connectionReady, subId: " + subId);
                 mConnectedLatch.countDown();
             }
         }
@@ -413,7 +406,6 @@ public class ImsManager implements FeatureUpdates {
         @Override
         public void connectionUnavailable(int reason) {
             synchronized (mLock) {
-                mImsManager.logi("connectionUnavailable, reason: " + reason);
                 // only need to track the connection becoming unavailable due to telephony going
                 // down.
                 if (reason == FeatureConnector.UNAVAILABLE_REASON_SERVER_UNAVAILABLE) {
@@ -1599,16 +1591,10 @@ public class ImsManager implements FeatureUpdates {
      * ImsConfig for that value.
      */
     private boolean getProvisionedBool(ImsConfig config, int item) throws ImsException {
-        int value = 0;
-        ITelephony telephony = getITelephony();
-        try {
-            if (telephony != null) {
-                value = telephony.getImsProvisioningInt(getSubId(), item);
-            }
-        } catch (RemoteException e) {
-            throw new ImsException(
-                    "getProvisionedBool : couldn't reach telephony! item: " + item,
-                    ImsReasonInfo.CODE_LOCAL_SERVICE_UNAVAILABLE);
+        int value = config.getProvisionedValue(item);
+        if (value == ImsConfigImplBase.CONFIG_RESULT_UNKNOWN) {
+            throw new ImsException("getProvisionedBool failed with error for item: " + item,
+                    ImsReasonInfo.CODE_LOCAL_INTERNAL_ERROR);
         }
         return value == ProvisioningManager.PROVISIONING_VALUE_ENABLED;
     }
@@ -1618,22 +1604,11 @@ public class ImsManager implements FeatureUpdates {
      * value.
      */
     private void setProvisionedBool(ImsConfig config, int item, int value) throws ImsException {
-        int result = ImsConfigImplBase.CONFIG_RESULT_UNKNOWN;
-        ITelephony telephony = getITelephony();
-        try {
-            if (telephony != null) {
-                result = telephony.setImsProvisioningInt(getSubId(), item, value);
-            }
-        } catch (RemoteException e) {
-            throw new ImsException(
-                    "setProvisionedBool : couldn't reach telephony! item: " + item,
-                    ImsReasonInfo.CODE_LOCAL_SERVICE_UNAVAILABLE);
-        }
+        int result = config.setConfig(item, value);
         if (result != ImsConfigImplBase.CONFIG_RESULT_SUCCESS) {
             throw new ImsException("setProvisionedBool failed with error for item: " + item,
                     ImsReasonInfo.CODE_LOCAL_INTERNAL_ERROR);
         }
-        return;
     }
 
     /**
@@ -1906,7 +1881,7 @@ public class ImsManager implements FeatureUpdates {
             // currently.
             try {
                 if (telephony != null) {
-                    isProvisioned = telephony.getImsProvisioningStatusForCapability(getSubId(),
+                    isProvisioned = telephony.isMmTelCapabilityProvisionedInCache(getSubId(),
                             MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_UT,
                             ImsRegistrationImplBase.REGISTRATION_TECH_LTE);
                 }
@@ -1981,7 +1956,7 @@ public class ImsManager implements FeatureUpdates {
         mBinderCache = new BinderCacheManager<>(ImsManager::getITelephonyInterface);
         // Start off with an empty MmTelFeatureConnection, which will be replaced one an
         // ImsService is available (ImsManager expects a non-null FeatureConnection)
-        associate(null /*container*/, SubscriptionManager.INVALID_SUBSCRIPTION_ID);
+        associate(null /*container*/);
     }
 
     /**
@@ -1989,8 +1964,7 @@ public class ImsManager implements FeatureUpdates {
      */
     @VisibleForTesting
     public ImsManager(Context context, int phoneId, MmTelFeatureConnectionFactory factory,
-            SubscriptionManagerProxy subManagerProxy, SettingsProxy settingsProxy,
-            BinderCacheManager binderCacheManager) {
+            SubscriptionManagerProxy subManagerProxy, SettingsProxy settingsProxy) {
         mContext = context;
         mPhoneId = phoneId;
         mMmTelFeatureConnectionFactory = factory;
@@ -2000,9 +1974,9 @@ public class ImsManager implements FeatureUpdates {
                 Context.CARRIER_CONFIG_SERVICE);
         // Do not multithread tests
         mExecutor = Runnable::run;
-        mBinderCache = binderCacheManager;
+        mBinderCache = new BinderCacheManager<>(ImsManager::getITelephonyInterface);
         // MmTelFeatureConnection should be replaced for tests with mMmTelFeatureConnectionFactory.
-        associate(null /*container*/, SubscriptionManager.INVALID_SUBSCRIPTION_ID);
+        associate(null /*container*/);
     }
 
     /*
@@ -2785,12 +2759,6 @@ public class ImsManager implements FeatureUpdates {
             throw new ImsException("Service is unavailable",
                     ImsReasonInfo.CODE_LOCAL_IMS_SERVICE_DOWN);
         }
-        if (getSubId() != c.getSubId()) {
-            logi("Trying to get MmTelFeature when it is still setting up, curr subId=" + getSubId()
-                    + ", target subId=" + c.getSubId());
-            throw new ImsException("Service is still initializing",
-                    ImsReasonInfo.CODE_LOCAL_IMS_SERVICE_DOWN);
-        }
         return c;
     }
 
@@ -2842,13 +2810,13 @@ public class ImsManager implements FeatureUpdates {
     }
 
     @Override
-    public void associate(ImsFeatureContainer c, int subId) {
+    public void associate(ImsFeatureContainer c) {
         if (c == null) {
             mMmTelConnectionRef.set(mMmTelFeatureConnectionFactory.create(
-                    mContext, mPhoneId, subId, null, null, null, null));
+                    mContext, mPhoneId, null, null, null, null));
         } else {
             mMmTelConnectionRef.set(mMmTelFeatureConnectionFactory.create(
-                    mContext, mPhoneId, subId, IImsMmTelFeature.Stub.asInterface(c.imsFeature),
+                    mContext, mPhoneId, IImsMmTelFeature.Stub.asInterface(c.imsFeature),
                     c.imsConfig, c.imsRegistration, c.sipTransport));
         }
     }
@@ -2897,7 +2865,7 @@ public class ImsManager implements FeatureUpdates {
     private void logi(String s) {
         Rlog.i(TAG + mLogTagPostfix + " [" + mPhoneId + "]", s);
     }
-
+    
     private void logw(String s) {
         Rlog.w(TAG + mLogTagPostfix + " [" + mPhoneId + "]", s);
     }
