@@ -96,7 +96,6 @@ public class PidfParserTest extends ImsTestBase {
         RcsContactUceCapability capabilities = PidfParser.getRcsContactUceCapability(pidfData);
         assertNotNull(capabilities);
         assertEquals(Uri.parse(contact), capabilities.getContactUri());
-        assertEquals(Uri.parse(contact), capabilities.getEntityUri());
         assertEquals(RcsContactUceCapability.SOURCE_TYPE_NETWORK, capabilities.getSourceType());
         assertEquals(RcsContactUceCapability.CAPABILITY_MECHANISM_PRESENCE,
                 capabilities.getCapabilityMechanism());
@@ -172,7 +171,6 @@ public class PidfParserTest extends ImsTestBase {
 
         assertNotNull(capabilities);
         assertEquals(Uri.parse(contact), capabilities.getContactUri());
-        assertEquals(Uri.parse(contact), capabilities.getEntityUri());
         assertEquals(RcsContactUceCapability.SOURCE_TYPE_NETWORK, capabilities.getSourceType());
         assertEquals(RcsContactUceCapability.CAPABILITY_MECHANISM_PRESENCE,
                 capabilities.getCapabilityMechanism());
