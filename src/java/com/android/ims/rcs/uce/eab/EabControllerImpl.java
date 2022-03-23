@@ -56,6 +56,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.function.Predicate;
 
 /**
@@ -166,6 +167,29 @@ public class EabControllerImpl implements EabController {
     }
 
     /**
+     * Retrieve the contacts' capabilities from the EAB database including expired capabilities.
+     */
+    @Override
+    public @NonNull List<EabCapabilityResult> getCapabilitiesIncludingExpired(
+            @NonNull List<Uri> uris) {
+        Objects.requireNonNull(uris);
+        if (mIsSetDestroyedFlag) {
+            Log.d(TAG, "EabController destroyed.");
+            return generateDestroyedResult(uris);
+        }
+
+        Log.d(TAG, "getCapabilitiesIncludingExpired uri size=" + uris.size());
+        List<EabCapabilityResult> capabilityResultList = new ArrayList();
+
+        for (Uri uri : uris) {
+            EabCapabilityResult result = generateEabResultIncludingExpired(uri,
+                    this::isCapabilityExpired);
+            capabilityResultList.add(result);
+        }
+        return capabilityResultList;
+    }
+
+    /**
      * Retrieve the contact's capabilities from the availability cache.
      */
     @Override
@@ -179,6 +203,23 @@ public class EabControllerImpl implements EabController {
                     null);
         }
         return generateEabResult(contactUri, this::isAvailabilityExpired);
+    }
+
+    /**
+     * Retrieve the contact's capabilities from the availability cache including expired
+     * capabilities.
+     */
+    @Override
+    public @NonNull EabCapabilityResult getAvailabilityIncludingExpired(@NonNull Uri contactUri) {
+        Objects.requireNonNull(contactUri);
+        if (mIsSetDestroyedFlag) {
+            Log.d(TAG, "EabController destroyed.");
+            return new EabCapabilityResult(
+                contactUri,
+                EabCapabilityResult.EAB_CONTROLLER_DESTROYED_FAILURE,
+                null);
+        }
+        return generateEabResultIncludingExpired(contactUri, this::isAvailabilityExpired);
     }
 
     /**
@@ -299,6 +340,52 @@ public class EabControllerImpl implements EabController {
         return result;
     }
 
+    private EabCapabilityResult generateEabResultIncludingExpired(Uri contactUri,
+            Predicate<Cursor> isExpiredMethod) {
+        RcsUceCapabilityBuilderWrapper builder = null;
+        EabCapabilityResult result;
+        Optional<Boolean> isExpired = Optional.empty();
+
+        // query EAB provider
+        Uri queryUri = Uri.withAppendedPath(
+                Uri.withAppendedPath(EabProvider.ALL_DATA_URI, String.valueOf(mSubId)),
+                getNumberFromUri(mContext, contactUri));
+        Cursor cursor = mContext.getContentResolver().query(queryUri, null, null, null, null);
+
+        if (cursor != null && cursor.getCount() != 0) {
+            while (cursor.moveToNext()) {
+                // Record whether it has expired.
+                if (!isExpired.isPresent()) {
+                    isExpired = Optional.of(isExpiredMethod.test(cursor));
+                }
+                if (builder == null) {
+                    builder = createNewBuilder(contactUri, cursor);
+                } else {
+                    updateCapability(contactUri, cursor, builder);
+                }
+            }
+            cursor.close();
+
+            // Determine the query result
+            int eabResult = EabCapabilityResult.EAB_QUERY_SUCCESSFUL;
+            if (isExpired.orElse(false)) {
+                eabResult = EabCapabilityResult.EAB_CONTACT_EXPIRED_FAILURE;
+            }
+
+            if (builder.getMechanism() == CAPABILITY_MECHANISM_PRESENCE) {
+                PresenceBuilder presenceBuilder = builder.getPresenceBuilder();
+                result = new EabCapabilityResult(contactUri, eabResult, presenceBuilder.build());
+            } else {
+                OptionsBuilder optionsBuilder = builder.getOptionsBuilder();
+                result = new EabCapabilityResult(contactUri, eabResult, optionsBuilder.build());
+            }
+        } else {
+            result = new EabCapabilityResult(contactUri,
+                    EabCapabilityResult.EAB_CONTACT_NOT_FOUND_FAILURE, null);
+        }
+        return result;
+    }
+
     private void updateCapability(Uri contactUri, Cursor cursor,
                 RcsUceCapabilityBuilderWrapper builderWrapper) {
         if (builderWrapper.getMechanism() == CAPABILITY_MECHANISM_PRESENCE) {
@@ -323,7 +410,14 @@ public class EabControllerImpl implements EabController {
         if (mechanism == CAPABILITY_MECHANISM_PRESENCE) {
             PresenceBuilder builder = new PresenceBuilder(
                     contactUri, SOURCE_TYPE_CACHED, result);
-            builder.addCapabilityTuple(createPresenceTuple(contactUri, cursor));
+            RcsContactPresenceTuple tuple = createPresenceTuple(contactUri, cursor);
+            if (tuple != null) {
+                builder.addCapabilityTuple(tuple);
+            }
+            String entityUri = getStringValue(cursor, EabProvider.EabCommonColumns.ENTITY_URI);
+            if (!TextUtils.isEmpty(entityUri)) {
+                builder.setEntityUri(Uri.parse(entityUri));
+            }
             builderWrapper.setPresenceBuilder(builder);
         } else {
             OptionsBuilder builder = new OptionsBuilder(contactUri, SOURCE_TYPE_CACHED);
@@ -385,29 +479,34 @@ public class EabControllerImpl implements EabController {
         serviceCapabilities = serviceCapabilitiesBuilder.build();
 
         // Create RcsContactPresenceTuple
-        RcsContactPresenceTuple.Builder rcsContactPresenceTupleBuilder =
-                new RcsContactPresenceTuple.Builder(status, serviceId, version);
-        if (description != null) {
-            rcsContactPresenceTupleBuilder.setServiceDescription(description);
-        }
-        if (contactUri != null) {
-            rcsContactPresenceTupleBuilder.setContactUri(contactUri);
-        }
-        if (serviceCapabilities != null) {
-            rcsContactPresenceTupleBuilder.setServiceCapabilities(serviceCapabilities);
-        }
-        if (timeStamp != null) {
-            try {
-                Instant instant = Instant.ofEpochSecond(Long.parseLong(timeStamp));
-                rcsContactPresenceTupleBuilder.setTime(instant);
-            } catch (NumberFormatException ex) {
-                Log.w(TAG, "Create presence tuple: NumberFormatException");
-            } catch (DateTimeParseException e) {
-                Log.w(TAG, "Create presence tuple: parse timestamp failed");
+        boolean isTupleEmpty = TextUtils.isEmpty(status) && TextUtils.isEmpty(serviceId)
+                && TextUtils.isEmpty(version);
+        if (!isTupleEmpty) {
+            RcsContactPresenceTuple.Builder rcsContactPresenceTupleBuilder =
+                    new RcsContactPresenceTuple.Builder(status, serviceId, version);
+            if (description != null) {
+                rcsContactPresenceTupleBuilder.setServiceDescription(description);
             }
+            if (contactUri != null) {
+                rcsContactPresenceTupleBuilder.setContactUri(contactUri);
+            }
+            if (serviceCapabilities != null) {
+                rcsContactPresenceTupleBuilder.setServiceCapabilities(serviceCapabilities);
+            }
+            if (timeStamp != null) {
+                try {
+                    Instant instant = Instant.ofEpochSecond(Long.parseLong(timeStamp));
+                    rcsContactPresenceTupleBuilder.setTime(instant);
+                } catch (NumberFormatException ex) {
+                    Log.w(TAG, "Create presence tuple: NumberFormatException");
+                } catch (DateTimeParseException e) {
+                    Log.w(TAG, "Create presence tuple: parse timestamp failed");
+                }
+            }
+            return rcsContactPresenceTupleBuilder.build();
+        } else {
+            return null;
         }
-
-        return rcsContactPresenceTupleBuilder.build();
     }
 
     private boolean isCapabilityExpired(Cursor cursor) {
@@ -557,12 +656,36 @@ public class EabControllerImpl implements EabController {
         contentValues.put(EabProvider.EabCommonColumns.SUBSCRIPTION_ID, mSubId);
         contentValues.put(EabProvider.EabCommonColumns.REQUEST_RESULT,
                 capability.getRequestResult());
+        if (capability.getEntityUri() != null) {
+            contentValues.put(EabProvider.EabCommonColumns.ENTITY_URI,
+                    capability.getEntityUri().toString());
+        }
         Uri result = mContext.getContentResolver().insert(EabProvider.COMMON_URI, contentValues);
         int commonId = Integer.parseInt(result.getLastPathSegment());
         Log.d(TAG, "Insert into common table. Id: " + commonId);
 
+        if (capability.getCapabilityTuples().size() == 0) {
+            insertEmptyTuple(commonId);
+        } else {
+            insertAllTuples(commonId, capability);
+        }
+    }
+
+    private void insertEmptyTuple(int commonId) {
+        Log.d(TAG, "Insert empty tuple into presence table.");
+        ContentValues contentValues = new ContentValues();
+        contentValues.put(EabProvider.PresenceTupleColumns.EAB_COMMON_ID, commonId);
+        // Using current timestamp instead of network timestamp since there is not use cases for
+        // network timestamp and the network timestamp may cause capability expire immediately.
+        contentValues.put(EabProvider.PresenceTupleColumns.REQUEST_TIMESTAMP,
+                mExpirationTimeFactory.getExpirationTime());
+        mContext.getContentResolver().insert(EabProvider.PRESENCE_URI, contentValues);
+    }
+
+    private void insertAllTuples(int commonId, RcsContactUceCapability capability) {
         ContentValues[] presenceContent =
                 new ContentValues[capability.getCapabilityTuples().size()];
+
         for (int i = 0; i < presenceContent.length; i++) {
             RcsContactPresenceTuple tuple = capability.getCapabilityTuples().get(i);
 
@@ -583,7 +706,7 @@ public class EabControllerImpl implements EabController {
                 }
             }
 
-            contentValues = new ContentValues();
+            ContentValues contentValues = new ContentValues();
             contentValues.put(EabProvider.PresenceTupleColumns.EAB_COMMON_ID, commonId);
             contentValues.put(EabProvider.PresenceTupleColumns.BASIC_STATUS, tuple.getStatus());
             contentValues.put(EabProvider.PresenceTupleColumns.SERVICE_ID, tuple.getServiceId());

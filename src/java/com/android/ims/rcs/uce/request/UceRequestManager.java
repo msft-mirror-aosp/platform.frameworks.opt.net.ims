@@ -22,6 +22,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
 import android.os.RemoteException;
+import android.telephony.TelephonyManager;
 import android.telephony.ims.RcsContactUceCapability;
 import android.telephony.ims.RcsContactUceCapability.CapabilityMechanism;
 import android.telephony.ims.RcsUceAdapter;
@@ -30,6 +31,9 @@ import android.telephony.ims.aidl.IRcsUceControllerCallback;
 import android.text.TextUtils;
 import android.util.Log;
 
+import com.android.i18n.phonenumbers.NumberParseException;
+import com.android.i18n.phonenumbers.PhoneNumberUtil;
+import com.android.i18n.phonenumbers.Phonenumber;
 import com.android.ims.rcs.uce.UceController;
 import com.android.ims.rcs.uce.UceController.UceControllerCallback;
 import com.android.ims.rcs.uce.UceDeviceState;
@@ -49,6 +53,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
@@ -58,6 +63,14 @@ import java.util.stream.Collectors;
 public class UceRequestManager {
 
     private static final String LOG_TAG = UceUtils.getLogPrefix() + "UceRequestManager";
+
+    /**
+     * When enabled, skip the request queue for requests that have numbers with valid cached
+     * capabilities and return that cached info directly.
+     * Note: This also has a CTS test associated with it, so this can not be disabled without
+     * disabling the corresponding RcsUceAdapterTest#testCacheQuerySuccessWhenNetworkBlocked test.
+     */
+    private static final boolean FEATURE_SHORTCUT_QUEUE_FOR_CACHED_CAPS = true;
 
     /**
      * Testing interface used to mock UceUtils in testing.
@@ -148,9 +161,19 @@ public class UceRequestManager {
         List<EabCapabilityResult> getCapabilitiesFromCache(List<Uri> uriList);
 
         /**
+         * Retrieve the contact capabilities from the cache including the expired capabilities.
+         */
+        List<EabCapabilityResult> getCapabilitiesFromCacheIncludingExpired(List<Uri> uriList);
+
+        /**
          * Retrieve the contact availability from the cache.
          */
         EabCapabilityResult getAvailabilityFromCache(Uri uri);
+
+        /**
+         * Retrieve the contact availability from the cache including the expired capabilities.
+         */
+        EabCapabilityResult getAvailabilityFromCacheIncludingExpired(Uri uri);
 
         /**
          * Store the given contact capabilities to the cache.
@@ -241,6 +264,19 @@ public class UceRequestManager {
          * to remove the coordinator from the UceRequestRepository.
          */
         void notifyRequestCoordinatorFinished(long requestCoordinatorId);
+
+        /**
+         * Check whether the given uris are in the throttling list.
+         * @param uriList the uris to check if it is in the throttling list
+         * @return the uris in the throttling list
+         */
+        List<Uri> getInThrottlingListUris(List<Uri> uriList);
+
+        /**
+         * Add the given uris to the throttling list because the capabilities request result
+         * is inconclusive.
+         */
+        void addToThrottlingList(List<Uri> uriList, int sipCode);
     }
 
     private RequestManagerCallback mRequestMgrCallback = new RequestManagerCallback() {
@@ -255,8 +291,18 @@ public class UceRequestManager {
         }
 
         @Override
+        public List<EabCapabilityResult> getCapabilitiesFromCacheIncludingExpired(List<Uri> uris) {
+            return mControllerCallback.getCapabilitiesFromCacheIncludingExpired(uris);
+        }
+
+        @Override
         public EabCapabilityResult getAvailabilityFromCache(Uri uri) {
             return mControllerCallback.getAvailabilityFromCache(uri);
+        }
+
+        @Override
+        public EabCapabilityResult getAvailabilityFromCacheIncludingExpired(Uri uri) {
+            return mControllerCallback.getAvailabilityFromCacheIncludingExpired(uri);
         }
 
         @Override
@@ -350,12 +396,23 @@ public class UceRequestManager {
         public void notifyRequestCoordinatorFinished(long requestCoordinatorId) {
             mHandler.sendRequestCoordinatorFinishedMessage(requestCoordinatorId);
         }
+
+        @Override
+        public List<Uri> getInThrottlingListUris(List<Uri> uriList) {
+            return mThrottlingList.getInThrottlingListUris(uriList);
+        }
+
+        @Override
+        public void addToThrottlingList(List<Uri> uriList, int sipCode) {
+            mThrottlingList.addToThrottlingList(uriList, sipCode);
+        }
     };
 
     private final int mSubId;
     private final Context mContext;
     private final UceRequestHandler mHandler;
     private final UceRequestRepository mRequestRepository;
+    private final ContactThrottlingList mThrottlingList;
     private volatile boolean mIsDestroyed;
 
     private OptionsController mOptionsCtrl;
@@ -367,6 +424,7 @@ public class UceRequestManager {
         mContext = context;
         mControllerCallback = c;
         mHandler = new UceRequestHandler(this, looper);
+        mThrottlingList = new ContactThrottlingList(mSubId);
         mRequestRepository = new UceRequestRepository(subId, mRequestMgrCallback);
         logi("create");
     }
@@ -379,6 +437,7 @@ public class UceRequestManager {
         mControllerCallback = c;
         mHandler = new UceRequestHandler(this, looper);
         mRequestRepository = requestRepository;
+        mThrottlingList = new ContactThrottlingList(mSubId);
     }
 
     /**
@@ -402,7 +461,15 @@ public class UceRequestManager {
         logi("onDestroy");
         mIsDestroyed = true;
         mHandler.onDestroy();
+        mThrottlingList.reset();
         mRequestRepository.onDestroy();
+    }
+
+    /**
+     * Clear the throttling list.
+     */
+    public void resetThrottlingList() {
+        mThrottlingList.reset();
     }
 
     /**
@@ -433,12 +500,27 @@ public class UceRequestManager {
     private void sendRequestInternal(@UceRequestType int type, List<Uri> uriList,
             boolean skipFromCache, IRcsUceControllerCallback callback) throws RemoteException {
         UceRequestCoordinator requestCoordinator = null;
+        List<Uri> nonCachedUris = uriList;
+        if (FEATURE_SHORTCUT_QUEUE_FOR_CACHED_CAPS && !skipFromCache) {
+            nonCachedUris = sendCachedCapInfoToRequester(type, uriList, callback);
+            if (uriList.size() != nonCachedUris.size()) {
+                logd("sendRequestInternal: shortcut queue for caps - request reduced from "
+                        + uriList.size() + " entries to " + nonCachedUris.size() + " entries");
+            } else {
+                logd("sendRequestInternal: shortcut queue for caps - no cached caps.");
+            }
+            if (nonCachedUris.isEmpty()) {
+                logd("sendRequestInternal: shortcut complete, sending success result");
+                callback.onComplete();
+                return;
+            }
+        }
         if (sUceUtilsProxy.isPresenceCapExchangeEnabled(mContext, mSubId) &&
                 sUceUtilsProxy.isPresenceSupported(mContext, mSubId)) {
-            requestCoordinator = createSubscribeRequestCoordinator(type, uriList, skipFromCache,
-                    callback);
+            requestCoordinator = createSubscribeRequestCoordinator(type, nonCachedUris,
+                    skipFromCache, callback);
         } else if (sUceUtilsProxy.isSipOptionsSupported(mContext, mSubId)) {
-            requestCoordinator = createOptionsRequestCoordinator(type, uriList, callback);
+            requestCoordinator = createOptionsRequestCoordinator(type, nonCachedUris, callback);
         }
 
         if (requestCoordinator == null) {
@@ -459,6 +541,64 @@ public class UceRequestManager {
         addRequestCoordinator(requestCoordinator);
     }
 
+    /**
+     * Try to get the valid capabilities associated with the URI List specified from the EAB cache.
+     * If one or more of the numbers from the URI List have valid cached capabilities, return them
+     * to the requester now and remove them from the returned List of URIs that will require a
+     * network query.
+     * @param type The type of query
+     * @param uriList The List of URIs that we want to send cached capabilities for
+     * @param callback The callback used to communicate with the remote requester
+     * @return The List of URIs that were not found in the capability cache and will require a
+     * network query.
+     */
+    private List<Uri> sendCachedCapInfoToRequester(int type, List<Uri> uriList,
+            IRcsUceControllerCallback callback) {
+        List<Uri> nonCachedUris = new ArrayList<>(uriList);
+        List<RcsContactUceCapability> numbersWithCachedCaps =
+                getCapabilitiesFromCache(type, nonCachedUris);
+        try {
+            if (!numbersWithCachedCaps.isEmpty()) {
+                logd("sendCachedCapInfoToRequester: cached caps found for "
+                        + numbersWithCachedCaps.size() + " entries. Notifying requester.");
+                // Notify caller of the numbers that have cached caps
+                callback.onCapabilitiesReceived(numbersWithCachedCaps);
+            }
+        } catch (RemoteException e) {
+            logw("sendCachedCapInfoToRequester, error sending cap info back to requester: " + e);
+        }
+        // remove these numbers from the numbers pending a cap query from the network.
+        for (RcsContactUceCapability c : numbersWithCachedCaps) {
+            nonCachedUris.removeIf(uri -> c.getContactUri().equals(uri));
+        }
+        return nonCachedUris;
+    }
+
+    /**
+     * Get the capabilities for the List of given URIs
+     * @param requestType The request type, used to determine if the cached info is "fresh" enough.
+     * @param uriList The List of URIs that we will be requesting cached capabilities for.
+     * @return A list of capabilities corresponding to the subset of numbers that still have
+     * valid cache data associated with them.
+     */
+    private List<RcsContactUceCapability> getCapabilitiesFromCache(int requestType,
+            List<Uri> uriList) {
+        List<EabCapabilityResult> resultList = Collections.emptyList();
+        if (requestType == UceRequest.REQUEST_TYPE_CAPABILITY) {
+            resultList = mRequestMgrCallback.getCapabilitiesFromCache(uriList);
+        } else if (requestType == UceRequest.REQUEST_TYPE_AVAILABILITY) {
+            // Always get the first element if the request type is availability.
+            resultList = Collections.singletonList(
+                    mRequestMgrCallback.getAvailabilityFromCache(uriList.get(0)));
+        }
+        // Map from EabCapabilityResult -> RcsContactUceCapability.
+        // Pull out only items that have valid cache data.
+        return resultList.stream().filter(Objects::nonNull)
+                .filter(result -> result.getStatus() == EabCapabilityResult.EAB_QUERY_SUCCESSFUL)
+                .map(EabCapabilityResult::getContactCapabilities)
+                .filter(Objects::nonNull).collect(Collectors.toList());
+    }
+
     private UceRequestCoordinator createSubscribeRequestCoordinator(final @UceRequestType int type,
             final List<Uri> uriList, boolean skipFromCache, IRcsUceControllerCallback callback) {
         SubscribeRequestCoordinator.Builder builder;
@@ -469,6 +609,25 @@ public class UceRequestManager {
             List<UceRequest> requestList = new ArrayList<>();
             uriList.forEach(uri -> {
                 List<Uri> individualUri = Collections.singletonList(uri);
+                // Entity-uri, which is used as a request-uri, uses only a single subscription case
+                List<RcsContactUceCapability> capabilities =
+                        getCapabilitiesFromCache(type, individualUri);
+                if (!capabilities.isEmpty()) {
+                    RcsContactUceCapability capability = capabilities.get(0);
+                    Uri entityUri = capability.getEntityUri();
+                    if (entityUri != null) {
+                        // The query uri has been replaced by the stored entity uri.
+                        individualUri = Collections.singletonList(entityUri);
+                    } else {
+                        if (UceUtils.isSipUriForPresenceSubscribeEnabled(mContext, mSubId)) {
+                            individualUri = Collections.singletonList(getSipUriFromUri(uri));
+                        }
+                    }
+                } else {
+                    if (UceUtils.isSipUriForPresenceSubscribeEnabled(mContext, mSubId)) {
+                        individualUri = Collections.singletonList(getSipUriFromUri(uri));
+                    }
+                }
                 UceRequest request = createSubscribeRequest(type, individualUri, skipFromCache);
                 requestList.add(request);
             });
@@ -785,6 +944,33 @@ public class UceRequestManager {
 
     private void notifyRepositoryRequestFinished(Long taskId) {
         mRequestRepository.notifyRequestFinished(taskId);
+    }
+
+    private Uri getSipUriFromUri(Uri uri) {
+        Uri convertedUri = uri;
+        String number = convertedUri.getSchemeSpecificPart();
+        String[] numberParts = number.split("[@;:]");
+        number = numberParts[0];
+
+        TelephonyManager manager = mContext.getSystemService(TelephonyManager.class);
+        if (manager.getIsimDomain() == null) {
+            return convertedUri;
+        }
+        String simCountryIso = manager.getSimCountryIso();
+        if (TextUtils.isEmpty(simCountryIso)) {
+            return convertedUri;
+        }
+        simCountryIso = simCountryIso.toUpperCase();
+        PhoneNumberUtil util = PhoneNumberUtil.getInstance();
+        try {
+            Phonenumber.PhoneNumber phoneNumber = util.parse(number, simCountryIso);
+            number = util.format(phoneNumber, PhoneNumberUtil.PhoneNumberFormat.E164);
+            String sipUri = "sip:" + number + "@" + manager.getIsimDomain();
+            convertedUri = Uri.parse(sipUri);
+        } catch (NumberParseException e) {
+            Log.w(LOG_TAG, "formatNumber: could not format " + number + ", error: " + e);
+        }
+        return convertedUri;
     }
 
     @VisibleForTesting

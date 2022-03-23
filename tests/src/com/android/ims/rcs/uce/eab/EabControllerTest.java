@@ -35,7 +35,6 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.os.Looper;
 import android.os.PersistableBundle;
-import android.telephony.ims.ProvisioningManager;
 import android.telephony.ims.RcsContactPresenceTuple;
 import android.telephony.ims.RcsContactUceCapability;
 import android.test.mock.MockContentResolver;
@@ -126,6 +125,8 @@ public class EabControllerTest extends ImsTestBase {
         Assert.assertEquals(EabCapabilityResult.EAB_QUERY_SUCCESSFUL, result.getStatus());
         Assert.assertEquals(TEST_CONTACT_URI,
                 result.getContactCapabilities().getContactUri());
+        Assert.assertEquals(TEST_CONTACT_URI,
+                result.getContactCapabilities().getEntityUri());
     }
 
     @Test
@@ -142,6 +143,8 @@ public class EabControllerTest extends ImsTestBase {
                 mEabControllerSub1.getCapabilities(contactUriList).size());
         Assert.assertEquals(EabCapabilityResult.EAB_QUERY_SUCCESSFUL,
                 mEabControllerSub1.getCapabilities(contactUriList).get(0).getStatus());
+        Assert.assertEquals(TEST_CONTACT_URI, mEabControllerSub1.getCapabilities(contactUriList).
+                get(0).getContactCapabilities().getEntityUri());
     }
 
     @Test
@@ -313,6 +316,59 @@ public class EabControllerTest extends ImsTestBase {
                 mEabControllerSub2.getCapabilities(contactUriList).size());
     }
 
+    @Test
+    @SmallTest
+    public void testSaveCapabilityWithEmptyTuple() {
+        List<RcsContactUceCapability> contactList = new ArrayList<>();
+        contactList.add(createEmptyTuplePresenceCapability());
+
+        mEabControllerSub1.saveCapabilities(contactList);
+
+        List<Uri> contactUriList = new ArrayList<>();
+        contactUriList.add(TEST_CONTACT_URI);
+        List<EabCapabilityResult> capabilityResults =
+                mEabControllerSub1.getCapabilities(contactUriList);
+        Assert.assertEquals(1, capabilityResults.size());
+        Assert.assertEquals(EabCapabilityResult.EAB_QUERY_SUCCESSFUL,
+                capabilityResults.get(0).getStatus());
+        Assert.assertEquals(0,
+                capabilityResults.get(0).getContactCapabilities().getCapabilityTuples().size());
+    }
+
+    @Test
+    @SmallTest
+    public void testGetCapabilityWithEmptyTuple() {
+        List<RcsContactUceCapability> contactList = new ArrayList<>();
+        contactList.add(createEmptyTuplePresenceCapability());
+
+        mEabControllerSub1.saveCapabilities(contactList);
+
+        List<Uri> contactUriList = new ArrayList<>();
+        contactUriList.add(TEST_CONTACT_URI);
+        Assert.assertEquals(1,
+                mEabControllerSub1.getCapabilities(contactUriList).size());
+        Assert.assertEquals(EabCapabilityResult.EAB_QUERY_SUCCESSFUL,
+                mEabControllerSub1.getCapabilities(contactUriList).get(0).getStatus());
+    }
+
+    @Test
+    @SmallTest
+    public void testGetExpiredCapabilityWithEmptyTuple() {
+        List<RcsContactUceCapability> contactList = new ArrayList<>();
+        doReturn(0L).when(mExpirationTimeFactory).getExpirationTime();
+
+        contactList.add(createEmptyTuplePresenceCapability());
+
+        mEabControllerSub1.saveCapabilities(contactList);
+
+        List<Uri> contactUriList = new ArrayList<>();
+        contactUriList.add(TEST_CONTACT_URI);
+        Assert.assertEquals(1,
+                mEabControllerSub1.getCapabilities(contactUriList).size());
+        Assert.assertEquals(EabCapabilityResult.EAB_CONTACT_EXPIRED_FAILURE,
+                mEabControllerSub1.getCapabilities(contactUriList).get(0).getStatus());
+    }
+
     private RcsContactUceCapability createPresenceCapability() {
         RcsContactPresenceTuple.ServiceCapabilities.Builder serviceCapabilitiesBuilder =
                 new RcsContactPresenceTuple.ServiceCapabilities.Builder(TEST_AUDIO_CAPABLE,
@@ -337,6 +393,7 @@ public class EabControllerTest extends ImsTestBase {
                         TEST_CONTACT_URI, SOURCE_TYPE_NETWORK, REQUEST_RESULT_FOUND);
         builder.addCapabilityTuple(tupleWithServiceCapabilities);
         builder.addCapabilityTuple(tupleWithEmptyServiceCapabilities);
+        builder.setEntityUri(TEST_CONTACT_URI);
         return builder.build();
     }
 
@@ -355,6 +412,13 @@ public class EabControllerTest extends ImsTestBase {
                 new RcsContactUceCapability.PresenceBuilder(
                         TEST_CONTACT_URI, SOURCE_TYPE_NETWORK, REQUEST_RESULT_NOT_FOUND);
         builder.addCapabilityTuple(tupleWithServiceCapabilities);
+        return builder.build();
+    }
+
+    private RcsContactUceCapability createEmptyTuplePresenceCapability() {
+        RcsContactUceCapability.PresenceBuilder builder =
+                new RcsContactUceCapability.PresenceBuilder(
+                        TEST_CONTACT_URI, SOURCE_TYPE_NETWORK, REQUEST_RESULT_FOUND);
         return builder.build();
     }
 
