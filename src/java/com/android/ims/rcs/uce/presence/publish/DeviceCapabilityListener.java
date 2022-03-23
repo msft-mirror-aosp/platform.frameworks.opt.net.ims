@@ -46,7 +46,6 @@ import android.util.IndentingPrintWriter;
 import android.util.LocalLog;
 import android.util.Log;
 
-import com.android.ims.rcs.uce.UceStatsWriter;
 import com.android.ims.rcs.uce.presence.publish.PublishController.PublishControllerCallback;
 import com.android.ims.rcs.uce.presence.publish.PublishController.PublishTriggerType;
 import com.android.ims.rcs.uce.util.UceUtils;
@@ -54,12 +53,7 @@ import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.telephony.util.HandlerExecutor;
 
 import java.io.PrintWriter;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
 import java.util.Objects;
-import java.util.Set;
 
 /**
  * Listen to the device changes and notify the PublishController to publish the device's
@@ -70,8 +64,6 @@ public class DeviceCapabilityListener {
     private static final String LOG_TAG = UceUtils.getLogPrefix() + "DeviceCapListener";
 
     private static final long REGISTER_IMS_CHANGED_DELAY = 15000L;  // 15 seconds
-
-    private final UceStatsWriter mUceStatsWriter;
 
     /**
      * Used to inject ImsMmTelManager instances for testing.
@@ -107,7 +99,6 @@ public class DeviceCapabilityListener {
         private static final int EVENT_REGISTER_IMS_CONTENT_CHANGE = 1;
         private static final int EVENT_UNREGISTER_IMS_CHANGE = 2;
         private static final int EVENT_REQUEST_PUBLISH = 3;
-        private static final int EVENT_IMS_UNREGISTERED = 4;
 
         DeviceCapabilityHandler(Looper looper) {
             super(looper);
@@ -127,9 +118,6 @@ public class DeviceCapabilityListener {
                 case EVENT_REQUEST_PUBLISH:
                     int triggerType = msg.arg1;
                     mCallback.requestPublishFromInternal(triggerType);
-                    break;
-                case EVENT_IMS_UNREGISTERED:
-                    mCallback.updateImsUnregistered();
                     break;
             }
         }
@@ -158,14 +146,6 @@ public class DeviceCapabilityListener {
             message.what = EVENT_REQUEST_PUBLISH;
             message.arg1 = type;
             sendMessageDelayed(message, TRIGGER_PUBLISH_REQUEST_DELAY_MS);
-        }
-
-        public void sendImsUnregisteredMessage() {
-            logd("sendImsUnregisteredMessage");
-            // Remove the existing message and resend a new message.
-            removeMessages(EVENT_IMS_UNREGISTERED);
-            Message msg = obtainMessage(EVENT_IMS_UNREGISTERED);
-            sendMessageDelayed(msg, TRIGGER_PUBLISH_REQUEST_DELAY_MS);
         }
     }
 
@@ -200,7 +180,7 @@ public class DeviceCapabilityListener {
     private final Object mLock = new Object();
 
     public DeviceCapabilityListener(Context context, int subId, DeviceCapabilityInfo info,
-            PublishControllerCallback callback, UceStatsWriter uceStatsWriter) {
+            PublishControllerCallback callback) {
         mSubId = subId;
         logi("create");
 
@@ -208,7 +188,6 @@ public class DeviceCapabilityListener {
         mCallback = callback;
         mCapabilityInfo = info;
         mInitialized = false;
-        mUceStatsWriter = uceStatsWriter;
 
         mHandlerThread = new HandlerThread("DeviceCapListenerThread");
         mHandlerThread.start();
@@ -468,12 +447,6 @@ public class DeviceCapabilityListener {
                     synchronized (mLock) {
                         logi("onRcsRegistered: " + attributes);
                         if (!mIsImsCallbackRegistered) return;
-
-                        List<String> featureTagList = new ArrayList<>(attributes.getFeatureTags());
-                        int registrationTech = attributes.getRegistrationTechnology();
-
-                        mUceStatsWriter.setImsRegistrationFeatureTagStats(
-                                mSubId, featureTagList, registrationTech);
                         handleImsRcsRegistered(attributes);
                     }
                 }
@@ -483,7 +456,6 @@ public class DeviceCapabilityListener {
                     synchronized (mLock) {
                         logi("onRcsUnregistered: " + info);
                         if (!mIsImsCallbackRegistered) return;
-                        mUceStatsWriter.setStoreCompleteImsRegistrationFeatureTagStats(mSubId);
                         handleImsRcsUnregistered();
                     }
                 }
@@ -613,11 +585,8 @@ public class DeviceCapabilityListener {
         mCapabilityInfo.updateImsMmtelUnregistered();
         // When the MMTEL is unregistered, the mmtel associated uri should be cleared.
         handleMmTelSubscriberAssociatedUriChanged(null, false);
-
-        // If the RCS is already unregistered, it informs that the IMS is unregistered.
-        if (mCapabilityInfo.isImsRegistered() == false) {
-            mHandler.sendImsUnregisteredMessage();
-        }
+        mHandler.sendTriggeringPublishMessage(
+                PublishController.PUBLISH_TRIGGER_MMTEL_UNREGISTERED);
     }
 
     /*
@@ -663,9 +632,10 @@ public class DeviceCapabilityListener {
         boolean hasChanged = mCapabilityInfo.updateImsRcsUnregistered();
         // When the RCS is unregistered, the rcs associated uri should be cleared.
         handleRcsSubscriberAssociatedUriChanged(null, false);
-        // If the MMTEL is already unregistered, it informs that the IMS is unregistered.
-        if (mCapabilityInfo.isImsRegistered() == false) {
-            mHandler.sendImsUnregisteredMessage();
+        // Trigger publish if the state has changed.
+        if (hasChanged) {
+            mHandler.sendTriggeringPublishMessage(
+                    PublishController.PUBLISH_TRIGGER_RCS_UNREGISTERED);
         }
     }
 
