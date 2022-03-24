@@ -34,6 +34,7 @@ import androidx.test.filters.SmallTest;
 
 import com.android.ims.ImsTestBase;
 import com.android.ims.RcsFeatureManager;
+import com.android.ims.rcs.uce.UceStatsWriter;
 import com.android.ims.rcs.uce.presence.publish.PublishController.PublishControllerCallback;
 
 import org.junit.After;
@@ -42,6 +43,8 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
 
+import java.time.Instant;
+import java.util.Optional;
 @RunWith(AndroidJUnit4.class)
 public class PublishProcessorTest extends ImsTestBase {
 
@@ -50,6 +53,7 @@ public class PublishProcessorTest extends ImsTestBase {
     @Mock PublishControllerCallback mPublishCtrlCallback;
     @Mock PublishProcessorState mProcessorState;
     @Mock PublishRequestResponse mResponseCallback;
+    @Mock UceStatsWriter mUceStatsWriter;
 
     private int mSub = 1;
     private long mTaskId = 1L;
@@ -83,6 +87,7 @@ public class PublishProcessorTest extends ImsTestBase {
         verify(mProcessorState).setPublishingFlag(true);
         verify(mRcsFeatureManager).requestPublication(any(), any());
         verify(mPublishCtrlCallback).setupRequestCanceledTimer(anyLong(), anyLong());
+        verify(mPublishCtrlCallback).notifyPendingPublishRequest();
     }
 
     @Test
@@ -144,6 +149,8 @@ public class PublishProcessorTest extends ImsTestBase {
         doReturn(mTaskId).when(mProcessorState).getCurrentTaskId();
         doReturn(mTaskId).when(mResponseCallback).getTaskId();
         doReturn(true).when(mResponseCallback).needRetry();
+        doReturn(Optional.of(10)).when(mResponseCallback).getCmdErrorCode();
+
         PublishProcessor publishProcessor = getPublishProcessor();
 
         publishProcessor.onCommandError(mResponseCallback);
@@ -154,6 +161,8 @@ public class PublishProcessorTest extends ImsTestBase {
         verify(mResponseCallback).onDestroy();
         verify(mProcessorState).setPublishingFlag(false);
         verify(mPublishCtrlCallback).clearRequestCanceledTimer();
+        verify(mUceStatsWriter).setUceEvent(eq(mSub), eq(UceStatsWriter.PUBLISH_EVENT), eq(true),
+                eq(10), eq(0));
     }
 
     @Test
@@ -200,6 +209,7 @@ public class PublishProcessorTest extends ImsTestBase {
         doReturn(mTaskId).when(mResponseCallback).getTaskId();
         doReturn(false).when(mResponseCallback).needRetry();
         doReturn(true).when(mResponseCallback).isRequestSuccess();
+        doReturn(Optional.of(200)).when(mResponseCallback).getNetworkRespSipCode();
         PublishProcessor publishProcessor = getPublishProcessor();
 
         publishProcessor.onNetworkResponse(mResponseCallback);
@@ -208,6 +218,9 @@ public class PublishProcessorTest extends ImsTestBase {
         verify(mResponseCallback).onDestroy();
         verify(mProcessorState).setPublishingFlag(false);
         verify(mPublishCtrlCallback).clearRequestCanceledTimer();
+
+        verify(mUceStatsWriter).setUceEvent(eq(mSub), eq(UceStatsWriter.PUBLISH_EVENT), eq(true),
+                eq(0), eq(200));
     }
 
     @Test
@@ -221,9 +234,28 @@ public class PublishProcessorTest extends ImsTestBase {
         verify(mPublishCtrlCallback).clearRequestCanceledTimer();
     }
 
+    @Test
+    @SmallTest
+    public void testPublishUpdated() throws Exception {
+        Instant responseTime = Instant.now();
+        doReturn(responseTime).when(mResponseCallback).getResponseTimestamp();
+        doReturn(true).when(mResponseCallback).isRequestSuccess();
+
+        doReturn(0).when(mResponseCallback).getPublishState();
+        doReturn("").when(mResponseCallback).getPidfXml();
+
+        PublishProcessor publishProcessor = getPublishProcessor();
+
+        publishProcessor.publishUpdated(mResponseCallback);
+
+        verify(mProcessorState).setLastPublishedTime(any());
+        verify(mProcessorState).resetRetryCount();
+        verify(mPublishCtrlCallback).updatePublishRequestResult(anyInt(), any(), any());
+    }
+
     private PublishProcessor getPublishProcessor() {
         PublishProcessor publishProcessor = new PublishProcessor(mContext, mSub,
-                mDeviceCapabilities, mPublishCtrlCallback);
+                mDeviceCapabilities, mPublishCtrlCallback, mUceStatsWriter);
         publishProcessor.setProcessorState(mProcessorState);
         publishProcessor.onRcsConnected(mRcsFeatureManager);
         return publishProcessor;
