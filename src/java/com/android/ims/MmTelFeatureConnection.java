@@ -87,9 +87,10 @@ public class MmTelFeatureConnection extends FeatureConnection {
             if (imsRegistration != null) {
                 try {
                     imsRegistration.removeRegistrationCallback(localCallback);
-                } catch (RemoteException e) {
+                } catch (RemoteException | IllegalStateException e) {
                     Log.w(TAG + " [" + mSlotId + "]", "ImsRegistrationCallbackAdapter -"
-                            + " unregisterCallback: couldn't remove registration callback");
+                            + " unregisterCallback: couldn't remove registration callback"
+                            + " Exception: " + e.getMessage());
                 }
             } else {
                 Log.e(TAG + " [" + mSlotId + "]", "ImsRegistrationCallbackAdapter: ImsRegistration"
@@ -135,22 +136,19 @@ public class MmTelFeatureConnection extends FeatureConnection {
         public void unregisterCallback(IImsCapabilityCallback localCallback) {
             IImsMmTelFeature binder;
             synchronized (mLock) {
-                try {
-                    checkServiceIsReady();
-                    binder = getServiceInterface(mBinder);
-                } catch (RemoteException e) {
-                    // binder is null
+                if (!isBinderAlive()) {
                     Log.w(TAG + " [" + mSlotId + "]", "CapabilityCallbackManager, unregister:"
-                            + " couldn't get binder.");
+                            + " binder is not alive");
                     return;
                 }
+                binder = getServiceInterface(mBinder);
             }
             if (binder != null) {
                 try {
                     binder.removeCapabilityCallback(localCallback);
-                } catch (RemoteException e) {
+                } catch (RemoteException | IllegalStateException e) {
                     Log.w(TAG + " [" + mSlotId + "]", "CapabilityCallbackManager, unregister:"
-                            + " Binder is dead.");
+                            + " Binder is dead. Exception: " + e.getMessage());
                 }
             } else {
                 Log.w(TAG + " [" + mSlotId + "]", "CapabilityCallbackManager, unregister:"
@@ -190,9 +188,9 @@ public class MmTelFeatureConnection extends FeatureConnection {
             }
             try {
                 binder.removeImsConfigCallback(localCallback);
-            } catch (RemoteException e) {
+            } catch (RemoteException | IllegalStateException e) {
                 Log.w(TAG + " [" + mSlotId + "]", "ProvisioningCallbackManager - couldn't"
-                        + " unregister, binder is dead.");
+                        + " unregister, binder is dead. Exception: " + e.getMessage());
             }
         }
     }
@@ -325,8 +323,9 @@ public class MmTelFeatureConnection extends FeatureConnection {
                     mMultiEndpoint.getInterface().setExternalCallStateListener(null);
                     mMultiEndpoint = new BinderAccessState<>(BinderAccessState.STATE_NOT_SET);
                 }
-            } catch (RemoteException e) {
-                Log.w(TAG + " [" + mSlotId + "]", "closeConnection: couldn't remove listeners!");
+            } catch (RemoteException | IllegalStateException e) {
+                Log.w(TAG + " [" + mSlotId + "]", "closeConnection: couldn't remove listeners!" +
+                        " Exception: " + e.getMessage());
             }
         }
     }
