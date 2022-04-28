@@ -18,14 +18,10 @@ package com.android.ims;
 
 import android.content.Context;
 import android.os.IInterface;
-import android.os.Looper;
 import android.os.RemoteCallbackList;
 import android.telephony.SubscriptionManager;
 import android.util.Log;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Set;
 
 public abstract class ImsCallbackAdapterManager<T extends IInterface> {
     private static final String TAG = "ImsCallbackAM";
@@ -61,10 +57,21 @@ public abstract class ImsCallbackAdapterManager<T extends IInterface> {
 
     // Add a callback to be associated with a subscription.
     public void addCallbackForSubscription(T localCallback, int subId) {
-        if (!SubscriptionManager.isValidSubscriptionId(subId) || mSubId != subId) {
-            Log.w(TAG + " [" + mSlotId + ", " + mSubId + "]", "add callback: invalid subId or"
-                    + " inactive subID " + subId);
+        if (!SubscriptionManager.isValidSubscriptionId(subId)) {
+            Log.w(TAG + " [" + mSlotId + ", " + mSubId + "]", "add callback: invalid subId.");
             return;
+        }
+        if (mSubId != subId) {
+            // In some cases, telephony has changed sub id and IMS is still catching up to the
+            // state change. Ensure that the device does not try to register a callback on an
+            // inactive subscription, because this can cause a condition where we remove the
+            // callback invisibly when the new subscription loads. Instead, simulate the existing
+            // IllegalStateException that happens when the ImsService is not ready/active for
+            // backwards compatibility.
+            Log.w(TAG + " [" + mSlotId + ", " + mSubId + "]", "add callback: inactive"
+                    + " subID detected: " + subId);
+            throw new IllegalStateException("ImsService is not available for the subscription "
+                    + "specified.");
         }
         synchronized (mLock) {
             addCallback(localCallback);
