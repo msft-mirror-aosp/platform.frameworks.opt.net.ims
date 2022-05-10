@@ -23,6 +23,7 @@ import static junit.framework.Assert.assertFalse;
 
 import static org.junit.Assert.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
@@ -43,6 +44,7 @@ import androidx.test.filters.SmallTest;
 import com.android.ims.RcsFeatureManager;
 import com.android.ims.rcs.uce.UceController;
 import com.android.ims.rcs.uce.UceDeviceState.DeviceStateResult;
+import com.android.ims.rcs.uce.UceStatsWriter;
 import com.android.ims.rcs.uce.presence.publish.PublishController.PublishControllerCallback;
 import com.android.ims.rcs.uce.presence.publish.PublishControllerImpl.DeviceCapListenerFactory;
 import com.android.ims.rcs.uce.presence.publish.PublishControllerImpl.PublishProcessorFactory;
@@ -55,6 +57,8 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
 import org.mockito.Mock;
 
 @RunWith(AndroidJUnit4.class)
@@ -68,6 +72,8 @@ public class PublishControllerImplTest extends ImsTestBase {
     @Mock UceController.UceControllerCallback mUceCtrlCallback;
     @Mock RemoteCallbackList<IRcsUcePublishStateCallback> mPublishStateCallbacks;
     @Mock DeviceStateResult mDeviceStateResult;
+    @Mock IRcsUcePublishStateCallback mIRcsUcePublishStateCallback;
+    @Mock UceStatsWriter mUceStatsWriter;
 
     private int mSubId = 1;
 
@@ -77,9 +83,10 @@ public class PublishControllerImplTest extends ImsTestBase {
         doReturn(mPublishProcessor).when(mPublishProcessorFactory).createPublishProcessor(any(),
                 eq(mSubId), any(), any());
         doReturn(mDeviceCapListener).when(mDeviceCapListenerFactory).createDeviceCapListener(any(),
-                eq(mSubId), any(), any());
+                eq(mSubId), any(), any(), any());
         doReturn(mDeviceStateResult).when(mUceCtrlCallback).getDeviceState();
         doReturn(false).when(mDeviceStateResult).isRequestForbidden();
+        doReturn(false).when(mDeviceStateResult).isPublishRequestBlocked();
     }
 
     @After
@@ -123,10 +130,10 @@ public class PublishControllerImplTest extends ImsTestBase {
 
     @Test
     @SmallTest
-    public void testGetPublishState() throws Exception {
+    public void testGetPublishStateWithNotSupportPublishingState() throws Exception {
         PublishControllerImpl publishController = createPublishController();
 
-        int initState = publishController.getUcePublishState();
+        int initState = publishController.getUcePublishState(false);
         assertEquals(RcsUceAdapter.PUBLISH_STATE_NOT_PUBLISHED, initState);
 
         publishController.getPublishControllerCallback().updatePublishRequestResult(
@@ -134,8 +141,25 @@ public class PublishControllerImplTest extends ImsTestBase {
         Handler handler = publishController.getPublishHandler();
         waitForHandlerAction(handler, 1000);
 
-        int latestState = publishController.getUcePublishState();
+        int latestState = publishController.getUcePublishState(false);
         assertEquals(RcsUceAdapter.PUBLISH_STATE_OK, latestState);
+    }
+
+    @Test
+    @SmallTest
+    public void testGetPublishStateWithSupportPublishingState() throws Exception {
+        PublishControllerImpl publishController = createPublishController();
+
+        int initState = publishController.getUcePublishState(true);
+        assertEquals(RcsUceAdapter.PUBLISH_STATE_NOT_PUBLISHED, initState);
+
+        publishController.getPublishControllerCallback().updatePublishRequestResult(
+                RcsUceAdapter.PUBLISH_STATE_PUBLISHING, Instant.now(), null);
+        Handler handler = publishController.getPublishHandler();
+        waitForHandlerAction(handler, 1000);
+
+        int latestState = publishController.getUcePublishState(true);
+        assertEquals(RcsUceAdapter.PUBLISH_STATE_PUBLISHING, latestState);
     }
 
     @Test
@@ -143,17 +167,17 @@ public class PublishControllerImplTest extends ImsTestBase {
     public void testRegisterPublishStateCallback() throws Exception {
         PublishControllerImpl publishController = createPublishController();
 
-        publishController.registerPublishStateCallback(any());
+        publishController.registerPublishStateCallback(mIRcsUcePublishStateCallback, true);
 
-        verify(mPublishStateCallbacks).register(any());
+        verify(mPublishStateCallbacks).register(any(), any());
     }
 
     @Test
     @SmallTest
-    public void unregisterPublishStateCallback() throws Exception {
+    public void testUnregisterPublishStateCallback() throws Exception {
         PublishControllerImpl publishController = createPublishController();
 
-        publishController.unregisterPublishStateCallback(any());
+        publishController.unregisterPublishStateCallback(mIRcsUcePublishStateCallback);
 
         verify(mPublishStateCallbacks).unregister(any());
     }
@@ -162,13 +186,152 @@ public class PublishControllerImplTest extends ImsTestBase {
     @SmallTest
     public void testUnpublish() throws Exception {
         PublishControllerImpl publishController = createPublishController();
+        //To initialize the public state to publish_ok.
+        publishController.setCapabilityType(RcsImsCapabilities.CAPABILITY_TYPE_OPTIONS_UCE);
 
         publishController.onUnpublish();
 
         Handler handler = publishController.getPublishHandler();
         waitForHandlerAction(handler, 1000);
-        int publishState = publishController.getUcePublishState();
+        int publishState = publishController.getUcePublishState(false);
         assertEquals(RcsUceAdapter.PUBLISH_STATE_NOT_PUBLISHED, publishState);
+        verify(mPublishProcessor).resetState();
+        verify(mUceStatsWriter).setUnPublish(eq(mSubId));
+    }
+
+    @Test
+    @SmallTest
+    public void testImsUnregistered() throws Exception {
+        PublishControllerImpl publishController = createPublishController();
+        //To initialize the public state to publish_ok.
+        publishController.setCapabilityType(RcsImsCapabilities.CAPABILITY_TYPE_OPTIONS_UCE);
+
+        // Trigger a ims unregistered
+        PublishControllerCallback callback = publishController.getPublishControllerCallback();
+        callback.updateImsUnregistered();
+
+        Handler handler = publishController.getPublishHandler();
+        waitForHandlerAction(handler, 1000);
+        int publishState = publishController.getUcePublishState(false);
+        assertEquals(RcsUceAdapter.PUBLISH_STATE_NOT_PUBLISHED, publishState);
+        verify(mPublishProcessor).resetState();
+        verify(mUceStatsWriter).setUnPublish(eq(mSubId));
+    }
+
+    @Test
+    @SmallTest
+    public void testPublishUpdated() throws Exception {
+        PublishControllerImpl publishController = createPublishController();
+        int responseCode = 200;
+
+        publishController.onPublishUpdated(responseCode, "", 0, "");
+
+        Handler handler = publishController.getPublishHandler();
+        waitForHandlerAction(handler, 1000);
+
+        ArgumentCaptor<PublishRequestResponse> captor =
+                ArgumentCaptor.forClass(PublishRequestResponse.class);
+
+        verify(mPublishProcessor).publishUpdated(captor.capture());
+        PublishRequestResponse response = captor.getValue();
+        int expectedCode = response.getNetworkRespSipCode().orElse(-1);
+        assertEquals(responseCode, expectedCode);
+    }
+
+    @Test
+    @SmallTest
+    public void testPublishingStateTargetingEnable() throws Exception {
+        doReturn(1).when(mPublishStateCallbacks).getRegisteredCallbackCount();
+        Boolean boolObj = new Boolean(true);
+        Object uid1 = (Object)boolObj;
+        doReturn(uid1).when(mPublishStateCallbacks).getRegisteredCallbackCookie(anyInt());
+
+        PublishControllerImpl publishController = createPublishController();
+
+        //To initialize the public state to publish_ok.
+        publishController.mCurrentPublishState = RcsUceAdapter.PUBLISH_STATE_OK;
+
+        // send publish request.
+        PublishControllerCallback callback = publishController.getPublishControllerCallback();
+        callback.notifyPendingPublishRequest();
+
+        Handler handler = publishController.getPublishHandler();
+        waitForHandlerAction(handler, 1000);
+        int publishState = publishController.mCurrentPublishState;
+        int publishStateFromGetUcePublishState = publishController.getUcePublishState(true);
+        assertEquals(RcsUceAdapter.PUBLISH_STATE_PUBLISHING, publishState);
+        assertEquals(RcsUceAdapter.PUBLISH_STATE_PUBLISHING, publishStateFromGetUcePublishState);
+
+        // Set the state to OK as if got a 200 OK response to publish request
+        publishController.mCurrentPublishState = RcsUceAdapter.PUBLISH_STATE_OK;
+
+        publishStateFromGetUcePublishState = publishController.getUcePublishState(true);
+        assertEquals(RcsUceAdapter.PUBLISH_STATE_OK, publishStateFromGetUcePublishState);
+
+        // send publish request again.
+        callback.notifyPendingPublishRequest();
+        handler = publishController.getPublishHandler();
+        waitForHandlerAction(handler, 1000);
+        publishState = publishController.mCurrentPublishState;
+        publishStateFromGetUcePublishState = publishController.getUcePublishState(true);
+        assertEquals(RcsUceAdapter.PUBLISH_STATE_PUBLISHING, publishState);
+        assertEquals(RcsUceAdapter.PUBLISH_STATE_PUBLISHING, publishStateFromGetUcePublishState);
+    }
+
+    @Test
+    @SmallTest
+    public void testPublishingStateTargetingDisable() throws Exception {
+        doReturn(1).when(mPublishStateCallbacks).getRegisteredCallbackCount();
+        Boolean boolObj = new Boolean(false);
+        Object uid1 = (Object)boolObj;
+        doReturn(uid1).when(mPublishStateCallbacks).getRegisteredCallbackCookie(anyInt());
+
+        PublishControllerImpl publishController = createPublishController();
+        //To initialize the public state to publish_ok.
+        publishController.mCurrentPublishState = RcsUceAdapter.PUBLISH_STATE_OK;
+        publishController.mLastPublishState = RcsUceAdapter.PUBLISH_STATE_OK;
+
+        // send publish request
+        PublishControllerCallback callback = publishController.getPublishControllerCallback();
+        callback.notifyPendingPublishRequest();
+
+        //current state is pubilsh_ok. so the state didn`t chaged.
+        Handler handler = publishController.getPublishHandler();
+        waitForHandlerAction(handler, 1000);
+        int publishState = publishController.mLastPublishState;
+        int publishStateFromGetUcePublishState = publishController.getUcePublishState(false);
+        assertEquals(RcsUceAdapter.PUBLISH_STATE_OK, publishState);
+        assertEquals(RcsUceAdapter.PUBLISH_STATE_OK, publishStateFromGetUcePublishState);
+
+        // set the state to error.
+        publishController.mCurrentPublishState = RcsUceAdapter.PUBLISH_STATE_OTHER_ERROR;
+        // send publish request again.
+        callback.notifyPendingPublishRequest();
+        handler = publishController.getPublishHandler();
+        waitForHandlerAction(handler, 1000);
+
+        // the state must be changed to not published.
+        publishState = publishController.mLastPublishState;
+        publishStateFromGetUcePublishState = publishController.getUcePublishState(false);
+        assertEquals(RcsUceAdapter.PUBLISH_STATE_NOT_PUBLISHED, publishState);
+        assertEquals(RcsUceAdapter.PUBLISH_STATE_NOT_PUBLISHED, publishStateFromGetUcePublishState);
+
+        // Set the state to OK as if got a 200 OK response to publish request
+        publishController.mLastPublishState = RcsUceAdapter.PUBLISH_STATE_OK;
+        publishController.mCurrentPublishState = RcsUceAdapter.PUBLISH_STATE_OK;
+
+        publishStateFromGetUcePublishState = publishController.getUcePublishState(false);
+        assertEquals(RcsUceAdapter.PUBLISH_STATE_OK, publishStateFromGetUcePublishState);
+
+        // send publish request again.
+        callback.notifyPendingPublishRequest();
+        handler = publishController.getPublishHandler();
+        waitForHandlerAction(handler, 1000);
+        // current state is ok so the state didn`t changed.
+        publishState = publishController.mLastPublishState;
+        publishStateFromGetUcePublishState = publishController.getUcePublishState(false);
+        assertEquals(RcsUceAdapter.PUBLISH_STATE_OK, publishState);
+        assertEquals(RcsUceAdapter.PUBLISH_STATE_OK, publishStateFromGetUcePublishState);
     }
 
     @Test
@@ -208,6 +371,32 @@ public class PublishControllerImplTest extends ImsTestBase {
         Handler handler = publishController.getPublishHandler();
         waitForHandlerAction(handler, 1000);
         verify(mPublishProcessor).doPublish(PublishController.PUBLISH_TRIGGER_SERVICE);
+    }
+
+    @Test
+    @SmallTest
+    public void testRequestPublishFromServiceWhenDeviceNoRetry() throws Exception {
+        doReturn(true).when(mDeviceStateResult).isPublishRequestBlocked();
+
+        PublishControllerImpl publishController = createPublishController();
+        doReturn(Optional.of(0L)).when(mPublishProcessor).getPublishingDelayTime();
+
+        // Set the PRESENCE is capable
+        IImsCapabilityCallback RcsCapCallback = publishController.getRcsCapabilitiesCallback();
+        RcsCapCallback.onCapabilitiesStatusChanged(RcsUceAdapter.CAPABILITY_TYPE_PRESENCE_UCE);
+
+        // Trigger the PUBLISH request from the service.
+        publishController.requestPublishCapabilitiesFromService(
+                RcsUceAdapter.CAPABILITY_UPDATE_TRIGGER_MOVE_TO_IWLAN);
+
+        Handler handler = publishController.getPublishHandler();
+        waitForHandlerAction(handler, 1000);
+
+        // Reset device state because isPublishRequestBlocked() is true when Ims Service
+        // requests PUBLISH.
+        verify(mUceCtrlCallback).resetDeviceState();
+        // The PUBLISH request must be pending because the current device state is no_retry.
+        verify(mPublishProcessor).setPendingRequest(anyInt());
     }
 
     @Test
@@ -349,7 +538,7 @@ public class PublishControllerImplTest extends ImsTestBase {
     private PublishControllerImpl createPublishController() {
         PublishControllerImpl publishController = new PublishControllerImpl(mContext, mSubId,
                 mUceCtrlCallback, Looper.getMainLooper(), mDeviceCapListenerFactory,
-                mPublishProcessorFactory);
+                mPublishProcessorFactory, mUceStatsWriter);
         publishController.setPublishStateCallback(mPublishStateCallbacks);
         publishController.setCapabilityType(RcsImsCapabilities.CAPABILITY_TYPE_PRESENCE_UCE);
         return publishController;
