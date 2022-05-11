@@ -19,7 +19,12 @@ package com.android.ims.rcs.uce.presence.publish;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.refEq;
 import static org.mockito.Mockito.verify;
 
 import android.content.BroadcastReceiver;
@@ -39,12 +44,18 @@ import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
 
 import com.android.ims.ImsTestBase;
+import com.android.ims.rcs.uce.UceStatsWriter;
 
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
+import org.mockito.Mockito;
 
 @RunWith(AndroidJUnit4.class)
 public class DeviceCapabilityListenerTest extends ImsTestBase {
@@ -60,6 +71,7 @@ public class DeviceCapabilityListenerTest extends ImsTestBase {
     @Mock DeviceCapabilityListener.ImsMmTelManagerFactory mImsMmTelMgrFactory;
     @Mock DeviceCapabilityListener.ImsRcsManagerFactory mImsRcsMgrFactory;
     @Mock DeviceCapabilityListener.ProvisioningManagerFactory mProvisioningMgrFactory;
+    @Mock UceStatsWriter mUceStatsWriter;
 
     int mSubId = 1;
 
@@ -77,6 +89,10 @@ public class DeviceCapabilityListenerTest extends ImsTestBase {
         doReturn(true).when(mDeviceCapability).updateVtSetting(anyBoolean());
         doReturn(true).when(mDeviceCapability).updateVtSetting(anyBoolean());
         doReturn(true).when(mDeviceCapability).updateMmtelCapabilitiesChanged(any());
+
+        doNothing().when(mUceStatsWriter).setImsRegistrationFeatureTagStats(
+                anyInt(), anyList(), anyInt());
+        doNothing().when(mUceStatsWriter).setStoreCompleteImsRegistrationFeatureTagStats(anyInt());
     }
 
     @After
@@ -161,30 +177,22 @@ public class DeviceCapabilityListenerTest extends ImsTestBase {
 
     @Test
     @SmallTest
-    public void testMmTelUnregistration() throws Exception {
-        DeviceCapabilityListener deviceCapListener = createDeviceCapabilityListener();
-        deviceCapListener.setImsCallbackRegistered(true);
-        RegistrationCallback registrationCallback = deviceCapListener.mMmtelRegistrationCallback;
-
-        ImsReasonInfo info = new ImsReasonInfo(ImsReasonInfo.CODE_LOCAL_NOT_REGISTERED, -1, "");
-        registrationCallback.onUnregistered(info);
-
-        Handler handler = deviceCapListener.getHandler();
-        waitForHandlerActionDelayed(handler, HANDLER_WAIT_TIMEOUT_MS, HANDLER_SENT_DELAY_MS);
-
-        verify(mDeviceCapability).updateImsMmtelUnregistered();
-        verify(mCallback).requestPublishFromInternal(
-                PublishController.PUBLISH_TRIGGER_MMTEL_UNREGISTERED);
-    }
-
-    @Test
-    @SmallTest
     public void testRcsRegistration() throws Exception {
         DeviceCapabilityListener deviceCapListener = createDeviceCapabilityListener();
         deviceCapListener.setImsCallbackRegistered(true);
         RegistrationCallback registrationCallback = deviceCapListener.mRcsRegistrationCallback;
+
+        List<String> list = new ArrayList<>();
+        list.add("+g.3gpp.iari-ref=\"urn%3Aurn-7%3A3gpp-application.ims.iari.rcse.im\"");
+        list.add("+g.3gpp.icsi-ref=\"urn%3Aurn-7%3A3gpp-service.ims.icsi.oma.cpm.session\"");
+        list.add("+g.3gpp.iari-ref=\"urn%3Aurn-7%3A3gpp-application.ims.iari.rcs.ftsms\"");
+        Set<String> featureTags = new HashSet<String>(list);
+
         ImsRegistrationAttributes attr = new ImsRegistrationAttributes.Builder(
-                ImsRegistrationImplBase.REGISTRATION_TECH_LTE).build();
+                ImsRegistrationImplBase.REGISTRATION_TECH_LTE)
+                .setFeatureTags(featureTags)
+                .build();
+
         // Notify DeviceCapabilityListener that registered has caused a change and requires publish
         doReturn(true).when(mDeviceCapability).updateImsRcsRegistered(attr);
 
@@ -195,27 +203,8 @@ public class DeviceCapabilityListenerTest extends ImsTestBase {
         verify(mDeviceCapability).updateImsRcsRegistered(attr);
         verify(mCallback).requestPublishFromInternal(
                 PublishController.PUBLISH_TRIGGER_RCS_REGISTERED);
-    }
-
-    @Test
-    @SmallTest
-    public void testRcsUnregistration() throws Exception {
-        DeviceCapabilityListener deviceCapListener = createDeviceCapabilityListener();
-        deviceCapListener.setImsCallbackRegistered(true);
-        RegistrationCallback registrationCallback = deviceCapListener.mRcsRegistrationCallback;
-        // Notify DeviceCapabilityListener that unregistered has caused a change and requires
-        // publish.
-        doReturn(true).when(mDeviceCapability).updateImsRcsUnregistered();
-
-        ImsReasonInfo info = new ImsReasonInfo(ImsReasonInfo.CODE_LOCAL_NOT_REGISTERED, -1, "");
-        registrationCallback.onUnregistered(info);
-
-        Handler handler = deviceCapListener.getHandler();
-        waitForHandlerActionDelayed(handler, HANDLER_WAIT_TIMEOUT_MS, HANDLER_SENT_DELAY_MS);
-
-        verify(mDeviceCapability).updateImsRcsUnregistered();
-        verify(mCallback).requestPublishFromInternal(
-                PublishController.PUBLISH_TRIGGER_RCS_UNREGISTERED);
+        verify(mUceStatsWriter).setImsRegistrationFeatureTagStats(anyInt(),
+            refEq(list), eq(ImsRegistrationImplBase.REGISTRATION_TECH_LTE));
     }
 
     @Test
@@ -235,9 +224,51 @@ public class DeviceCapabilityListenerTest extends ImsTestBase {
                 PublishController.PUBLISH_TRIGGER_MMTEL_CAPABILITY_CHANGE);
     }
 
+    @Test
+    @SmallTest
+    public void testImsUnregistration() throws Exception {
+        DeviceCapabilityListener deviceCapListener = createDeviceCapabilityListener();
+        deviceCapListener.setImsCallbackRegistered(true);
+
+        // set the Ims is registered
+        doReturn(true).when(mDeviceCapability).isImsRegistered();
+        // MMTEL unregistered
+        RegistrationCallback mmtelRegiCallback = deviceCapListener.mMmtelRegistrationCallback;
+
+        ImsReasonInfo info = new ImsReasonInfo(ImsReasonInfo.CODE_LOCAL_NOT_REGISTERED, -1, "");
+        mmtelRegiCallback.onUnregistered(info);
+
+        Handler handler = deviceCapListener.getHandler();
+        waitForHandlerActionDelayed(handler, HANDLER_WAIT_TIMEOUT_MS, HANDLER_SENT_DELAY_MS);
+
+        verify(mDeviceCapability).updateImsMmtelUnregistered();
+
+        // Do not send internal publish trigger
+        verify(mCallback, never()).requestPublishFromInternal(anyInt());
+        // Only MMTEL unregistered. Verify do not send ImsUnregistered.
+        verify(mCallback, never()).updateImsUnregistered();
+
+        // set the Ims Unregistered
+        doReturn(false).when(mDeviceCapability).isImsRegistered();
+        // RCS unregistered
+        RegistrationCallback rcsRegiCallback = deviceCapListener.mRcsRegistrationCallback;
+        doReturn(true).when(mDeviceCapability).updateImsRcsUnregistered();
+
+        rcsRegiCallback.onUnregistered(info);
+
+        waitForHandlerActionDelayed(handler, HANDLER_WAIT_TIMEOUT_MS, HANDLER_SENT_DELAY_MS);
+
+        verify(mDeviceCapability).updateImsRcsUnregistered();
+        // Do not send internal publish trigger
+        verify(mCallback, never()).requestPublishFromInternal(anyInt());
+        verify(mUceStatsWriter).setStoreCompleteImsRegistrationFeatureTagStats(anyInt());
+
+        verify(mCallback).updateImsUnregistered();
+    }
+
     private DeviceCapabilityListener createDeviceCapabilityListener() {
         DeviceCapabilityListener deviceCapListener = new DeviceCapabilityListener(mContext,
-                mSubId, mDeviceCapability, mCallback);
+                mSubId, mDeviceCapability, mCallback, mUceStatsWriter);
         deviceCapListener.setImsMmTelManagerFactory(mImsMmTelMgrFactory);
         deviceCapListener.setImsRcsManagerFactory(mImsRcsMgrFactory);
         deviceCapListener.setProvisioningMgrFactory(mProvisioningMgrFactory);
