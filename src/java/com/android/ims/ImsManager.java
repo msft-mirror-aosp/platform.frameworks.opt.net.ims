@@ -849,12 +849,7 @@ public class ImsManager implements FeatureUpdates {
      * Indicates whether VoLTE is provisioned on this slot.
      */
     public boolean isVolteProvisionedOnDevice() {
-        // check new carrier config first KEY_MMTEL_REQUIRES_PROVISIONING_BUNDLE
-        // if that returns false, check deprecated carrier config
-        // KEY_CARRIER_VOLTE_PROVISIONING_REQUIRED_BOOL
-        if (isMmTelProvisioningRequired(CAPABILITY_TYPE_VOICE, REGISTRATION_TECH_LTE) ||
-                getBooleanCarrierConfig(
-                        CarrierConfigManager.KEY_CARRIER_VOLTE_PROVISIONING_REQUIRED_BOOL)) {
+        if (isMmTelProvisioningRequired(CAPABILITY_TYPE_VOICE, REGISTRATION_TECH_LTE)) {
             return isVolteProvisioned();
         }
 
@@ -865,12 +860,7 @@ public class ImsManager implements FeatureUpdates {
      * Indicates whether EAB is provisioned on this slot.
      */
     public boolean isEabProvisionedOnDevice() {
-        // check new carrier config first KEY_RCS_REQUIRES_PROVISIONING_BUNDLE
-        // if that returns false, check deprecated carrier config
-        // KEY_CARRIER_RCS_PROVISIONING_REQUIRED_BOOL
-        if (isRcsProvisioningRequired(CAPABILITY_TYPE_PRESENCE_UCE, REGISTRATION_TECH_LTE) ||
-                getBooleanCarrierConfig(
-                        CarrierConfigManager.KEY_CARRIER_RCS_PROVISIONING_REQUIRED_BOOL)) {
+        if (isRcsProvisioningRequired(CAPABILITY_TYPE_PRESENCE_UCE, REGISTRATION_TECH_LTE)) {
             return isEabProvisioned();
         }
 
@@ -910,12 +900,7 @@ public class ImsManager implements FeatureUpdates {
             }
         }
 
-        // check new carrier config first KEY_MMTEL_REQUIRES_PROVISIONING_BUNDLE
-        // if that returns false, check deprecated carrier config
-        // KEY_CARRIER_VOLTE_PROVISIONING_REQUIRED_BOOL
-        if (isMmTelProvisioningRequired(CAPABILITY_TYPE_VOICE, REGISTRATION_TECH_IWLAN)
-                || getBooleanCarrierConfig(
-                        CarrierConfigManager.KEY_CARRIER_VOLTE_PROVISIONING_REQUIRED_BOOL)) {
+        if (isMmTelProvisioningRequired(CAPABILITY_TYPE_VOICE, REGISTRATION_TECH_IWLAN)) {
             return isWfcProvisioned();
         }
 
@@ -942,12 +927,7 @@ public class ImsManager implements FeatureUpdates {
      * Indicates whether VT is provisioned on slot.
      */
     public boolean isVtProvisionedOnDevice() {
-        // check new carrier config first KEY_MMTEL_REQUIRES_PROVISIONING_BUNDLE
-        // if that returns false, check deprecated carrier config
-        // KEY_CARRIER_VOLTE_PROVISIONING_REQUIRED_BOOL
-        if (isMmTelProvisioningRequired(CAPABILITY_TYPE_VIDEO, REGISTRATION_TECH_LTE) ||
-                getBooleanCarrierConfig(
-                        CarrierConfigManager.KEY_CARRIER_VOLTE_PROVISIONING_REQUIRED_BOOL)) {
+        if (isMmTelProvisioningRequired(CAPABILITY_TYPE_VIDEO, REGISTRATION_TECH_LTE)) {
             return isVtProvisioned();
         }
 
@@ -1653,8 +1633,8 @@ public class ImsManager implements FeatureUpdates {
         }
 
         try {
-            return  iTelephony.getImsProvisioningStatusForCapability(subId, capability, tech);
-        } catch (RemoteException e) {
+            return iTelephony.getImsProvisioningStatusForCapability(subId, capability, tech);
+        } catch (RemoteException | IllegalArgumentException e) {
             logw("getImsProvisionedBoolNoException: operation failed for capability=" + capability
                     + ". Exception:" + e.getMessage() + ". Returning false.");
             return false;
@@ -1679,8 +1659,8 @@ public class ImsManager implements FeatureUpdates {
         }
 
         try {
-            return  iTelephony.getRcsProvisioningStatusForCapability(subId, capability, tech);
-        } catch (RemoteException e) {
+            return iTelephony.getRcsProvisioningStatusForCapability(subId, capability, tech);
+        } catch (RemoteException | IllegalArgumentException e) {
             logw("getRcsProvisionedBoolNoException: operation failed for capability=" + capability
                     + ". Exception:" + e.getMessage() + ". Returning false.");
             return false;
@@ -3175,10 +3155,11 @@ public class ImsManager implements FeatureUpdates {
 
         boolean required = false;
         try {
-                required |= iTelephony.isProvisioningRequiredForCapability(subId, capability,
-                        tech);
-        } catch (RemoteException e) {
-            logw("isMmTelProvisioningRequired couldn't reach telephony!");
+            required = iTelephony.isProvisioningRequiredForCapability(subId, capability,
+                    tech);
+        } catch (RemoteException | IllegalArgumentException e) {
+            logw("isMmTelProvisioningRequired : operation failed" + " capability=" + capability
+                    + " tech=" + tech + ". Exception:" + e.getMessage());
         }
 
         log("MmTel Provisioning required " + required + " for capability " + capability);
@@ -3200,10 +3181,11 @@ public class ImsManager implements FeatureUpdates {
 
         boolean required = false;
         try {
-            required |= iTelephony.isRcsProvisioningRequiredForCapability(subId, capability,
+            required = iTelephony.isRcsProvisioningRequiredForCapability(subId, capability,
                     tech);
-        } catch (RemoteException e) {
-            logw("isRcsProvisioningRequired couldn't reach telephony!");
+        } catch (RemoteException | IllegalArgumentException e) {
+            logw("isRcsProvisioningRequired : operation failed" + " capability=" + capability
+                    + " tech=" + tech + ". Exception:" + e.getMessage());
         }
 
         log("Rcs Provisioning required " + required + " for capability " + capability);
