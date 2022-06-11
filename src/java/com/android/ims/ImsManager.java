@@ -1634,7 +1634,7 @@ public class ImsManager implements FeatureUpdates {
 
         try {
             return iTelephony.getImsProvisioningStatusForCapability(subId, capability, tech);
-        } catch (RemoteException e) {
+        } catch (RemoteException | IllegalArgumentException e) {
             logw("getImsProvisionedBoolNoException: operation failed for capability=" + capability
                     + ". Exception:" + e.getMessage() + ". Returning false.");
             return false;
@@ -1660,7 +1660,7 @@ public class ImsManager implements FeatureUpdates {
 
         try {
             return iTelephony.getRcsProvisioningStatusForCapability(subId, capability, tech);
-        } catch (RemoteException e) {
+        } catch (RemoteException | IllegalArgumentException e) {
             logw("getRcsProvisionedBoolNoException: operation failed for capability=" + capability
                     + ". Exception:" + e.getMessage() + ". Returning false.");
             return false;
@@ -3035,7 +3035,8 @@ public class ImsManager implements FeatureUpdates {
     public @MmTelFeature.ProcessCallResult int shouldProcessCall(boolean isEmergency,
             String[] numbers) throws ImsException {
         try {
-            return mMmTelConnectionRef.get().shouldProcessCall(isEmergency, numbers);
+            MmTelFeatureConnection c = getOrThrowExceptionIfServiceUnavailable();
+            return c.shouldProcessCall(isEmergency, numbers);
         } catch (RemoteException e) {
             throw new ImsException("shouldProcessCall()", e,
                     ImsReasonInfo.CODE_LOCAL_IMS_SERVICE_DOWN);
@@ -3157,8 +3158,9 @@ public class ImsManager implements FeatureUpdates {
         try {
             required = iTelephony.isProvisioningRequiredForCapability(subId, capability,
                     tech);
-        } catch (RemoteException e) {
-            logw("isMmTelProvisioningRequired couldn't reach telephony!");
+        } catch (RemoteException | IllegalArgumentException e) {
+            logw("isMmTelProvisioningRequired : operation failed" + " capability=" + capability
+                    + " tech=" + tech + ". Exception:" + e.getMessage());
         }
 
         log("MmTel Provisioning required " + required + " for capability " + capability);
@@ -3182,8 +3184,9 @@ public class ImsManager implements FeatureUpdates {
         try {
             required = iTelephony.isRcsProvisioningRequiredForCapability(subId, capability,
                     tech);
-        } catch (RemoteException e) {
-            logw("isRcsProvisioningRequired couldn't reach telephony!");
+        } catch (RemoteException | IllegalArgumentException e) {
+            logw("isRcsProvisioningRequired : operation failed" + " capability=" + capability
+                    + " tech=" + tech + ". Exception:" + e.getMessage());
         }
 
         log("Rcs Provisioning required " + required + " for capability " + capability);
