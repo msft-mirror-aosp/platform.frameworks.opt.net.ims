@@ -25,15 +25,12 @@ import android.telephony.ims.RcsUceAdapter;
 import android.telephony.ims.aidl.ISubscribeResponseCallback;
 import android.telephony.ims.stub.RcsCapabilityExchangeImplBase.CommandCode;
 
-import com.android.ims.rcs.uce.eab.EabCapabilityResult;
 import com.android.ims.rcs.uce.presence.pidfparser.PidfParser;
 import com.android.ims.rcs.uce.presence.pidfparser.PidfParserUtils;
-import com.android.ims.rcs.uce.presence.pidfparser.RcsContactUceCapabilityWrapper;
 import com.android.ims.rcs.uce.presence.subscribe.SubscribeController;
 import com.android.ims.rcs.uce.request.UceRequestManager.RequestManagerCallback;
 import com.android.internal.annotations.VisibleForTesting;
 
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
@@ -192,59 +189,30 @@ public class SubscribeRequest extends CapabilityRequest {
             pidfXml = Collections.EMPTY_LIST;
         }
 
-        // Convert from the pidf xml to the list of RcsContactUceCapabilityWrapper
-        List<RcsContactUceCapabilityWrapper> capabilityList = pidfXml.stream()
-                .map(pidf -> PidfParser.getRcsContactUceCapabilityWrapper(pidf))
+        // Convert from the pidf xml to the list of RcsContactUceCapability
+        List<RcsContactUceCapability> capabilityList = pidfXml.stream()
+                .map(pidf -> PidfParser.getRcsContactUceCapability(pidf))
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList());
 
         // When the given PIDF xml is empty, set the contacts who have not received the
         // capabilities updated as non-RCS user.
-        List<RcsContactUceCapability> notReceivedCapabilityList = new ArrayList<>();
         if (capabilityList.isEmpty()) {
             logd("onCapabilitiesUpdate: The capabilities list is empty, Set to non-RCS user.");
             List<Uri> notReceiveCapUpdatedContactList =
                     mRequestResponse.getNotReceiveCapabilityUpdatedContact();
-            notReceivedCapabilityList = notReceiveCapUpdatedContactList.stream()
+            capabilityList = notReceiveCapUpdatedContactList.stream()
                     .map(PidfParserUtils::getNotFoundContactCapabilities)
                     .filter(Objects::nonNull)
                     .collect(Collectors.toList());
         }
 
-        List<RcsContactUceCapability> updateCapabilityList = new ArrayList<>();
-        List<Uri> malformedListWithEntityURI = new ArrayList<>();
-        for (RcsContactUceCapabilityWrapper capability : capabilityList) {
-            if (!capability.isMalformed()) {
-                updateCapabilityList.add(capability.toRcsContactUceCapability());
-            } else {
-                logw("onCapabilitiesUpdate: malformed capability was found and not saved.");
-                malformedListWithEntityURI.add(capability.getEntityUri());
-            }
-        }
         logd("onCapabilitiesUpdate: PIDF size=" + pidfXml.size()
-                + ", not received capability size=" + notReceivedCapabilityList.size()
-                + ", normal capability size=" + updateCapabilityList.size()
-                + ", malformed but entity uri is valid capability size="
-                + malformedListWithEntityURI.size());
+                + ", contact capability size=" + capabilityList.size());
 
-        for (RcsContactUceCapability emptyCapability : notReceivedCapabilityList) {
-            updateCapabilityList.add(emptyCapability);
-        }
-
-        // All tuples in received xml are malformed but entity uri is valid.
-        // The capability should be get from the DB and report it to callback.
-        List<EabCapabilityResult> cachedCapabilityList =
-                mRequestManagerCallback.getCapabilitiesFromCache(malformedListWithEntityURI);
-        for (EabCapabilityResult cacheEabCapability : cachedCapabilityList) {
-            RcsContactUceCapability cachedCapability = cacheEabCapability.getContactCapabilities();
-            if (cachedCapability != null) {
-                updateCapabilityList.add(cachedCapability);
-            }
-        }
         // Add these updated RcsContactUceCapability into the RequestResponse and notify
         // the RequestManager to process the RcsContactUceCapabilities updated.
-        logd("onCapabilitiesUpdate: updatedCapability size=" + updateCapabilityList.size());
-        mRequestResponse.addUpdatedCapabilities(updateCapabilityList);
+        mRequestResponse.addUpdatedCapabilities(capabilityList);
         mRequestManagerCallback.notifyCapabilitiesUpdated(mCoordinatorId, mTaskId);
     }
 

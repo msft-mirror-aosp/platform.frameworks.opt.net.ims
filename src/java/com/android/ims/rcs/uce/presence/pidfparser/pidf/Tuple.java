@@ -59,11 +59,8 @@ public class Tuple extends ElementBase {
     private List<Note> mNoteList = new ArrayList<>();
     private Timestamp mTimestamp;
 
-    private boolean mMalformed;
-
     public Tuple() {
         mId = getTupleId();
-        mMalformed = false;
     }
 
     @Override
@@ -122,14 +119,6 @@ public class Tuple extends ElementBase {
 
     public Timestamp getTimestamp() {
         return mTimestamp;
-    }
-
-    public void setMalformed(boolean malformed) {
-        mMalformed = malformed;
-    }
-
-    public boolean getMalformed() {
-        return mMalformed;
     }
 
     @Override

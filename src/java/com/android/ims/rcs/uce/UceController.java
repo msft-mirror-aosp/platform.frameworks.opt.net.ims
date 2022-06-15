@@ -80,21 +80,9 @@ public class UceController {
         List<EabCapabilityResult> getCapabilitiesFromCache(@NonNull List<Uri> uris);
 
         /**
-         * Retrieve the capabilities associated with the given uris from the cache including
-         * expired capabilities.
-         */
-        List<EabCapabilityResult> getCapabilitiesFromCacheIncludingExpired(@NonNull List<Uri> uris);
-
-        /**
          * Retrieve the contact's capabilities from the availability cache.
          */
         EabCapabilityResult getAvailabilityFromCache(@NonNull Uri uri);
-
-        /**
-         * Retrieve the contact's capabilities from the availability cache including expired
-         * capabilities
-         */
-        EabCapabilityResult getAvailabilityFromCacheIncludingExpired(@NonNull Uri uri);
 
         /**
          * Store the given capabilities to the cache.
@@ -212,13 +200,11 @@ public class UceController {
     private static class CachedCapabilityEvent {
         private Optional<Integer> mRequestPublishCapabilitiesEvent;
         private Optional<Boolean> mUnpublishEvent;
-        private Optional<SomeArgs> mPublishUpdatedEvent;
         private Optional<SomeArgs> mRemoteCapabilityRequestEvent;
 
         public CachedCapabilityEvent() {
             mRequestPublishCapabilitiesEvent = Optional.empty();
             mUnpublishEvent = Optional.empty();
-            mPublishUpdatedEvent = Optional.empty();
             mRemoteCapabilityRequestEvent = Optional.empty();
         }
 
@@ -234,19 +220,6 @@ public class UceController {
          */
         public synchronized void setOnUnpublishEvent() {
             mUnpublishEvent = Optional.of(Boolean.TRUE);
-        }
-
-        /**
-         * Cache the publish update event triggered by the ImsService.
-         */
-        public synchronized void setOnPublishUpdatedEvent(int reasonCode, String reasonPhrase,
-                int reasonHeaderCause, String reasonHeaderText) {
-            SomeArgs args = SomeArgs.obtain();
-            args.arg1 = reasonCode;
-            args.arg2 = reasonPhrase;
-            args.arg3 = reasonHeaderCause;
-            args.arg4 = reasonHeaderText;
-            mPublishUpdatedEvent = Optional.of(args);
         }
 
         /**
@@ -271,11 +244,6 @@ public class UceController {
             return mUnpublishEvent;
         }
 
-        /** @Return the cached pubilsh update event */
-        public synchronized Optional<SomeArgs> getPublishUpdatedEvent() {
-            return mPublishUpdatedEvent;
-        }
-
         /** @Return the cached remote capability request event */
         public synchronized Optional<SomeArgs> getRemoteCapabilityRequestEvent() {
             return mRemoteCapabilityRequestEvent;
@@ -285,8 +253,6 @@ public class UceController {
         public synchronized void clear() {
             mRequestPublishCapabilitiesEvent = Optional.empty();
             mUnpublishEvent = Optional.empty();
-            mPublishUpdatedEvent.ifPresent(args -> args.recycle());
-            mPublishUpdatedEvent = Optional.empty();
             mRemoteCapabilityRequestEvent.ifPresent(args -> args.recycle());
             mRemoteCapabilityRequestEvent = Optional.empty();
         }
@@ -489,15 +455,6 @@ public class UceController {
         Optional<Boolean> unpublishEvent = mCachedCapabilityEvent.getUnpublishEvent();
         unpublishEvent.ifPresent(unpublish -> onUnpublish());
 
-        Optional<SomeArgs> publishUpdatedEvent = mCachedCapabilityEvent.getPublishUpdatedEvent();
-        publishUpdatedEvent.ifPresent(args -> {
-            int reasonCode = (Integer) args.arg1;
-            String reasonPhrase = (String) args.arg2;
-            int reasonHeaderCause = (Integer) args.arg3;
-            String reasonHeaderText = (String) args.arg4;
-            onPublishUpdated(reasonCode, reasonPhrase, reasonHeaderCause, reasonHeaderText);
-        });
-
         Optional<SomeArgs> remoteRequest = mCachedCapabilityEvent.getRemoteCapabilityRequestEvent();
         remoteRequest.ifPresent(args -> {
             Uri contactUri = (Uri) args.arg1;
@@ -519,18 +476,8 @@ public class UceController {
         }
 
         @Override
-        public List<EabCapabilityResult> getCapabilitiesFromCacheIncludingExpired(List<Uri> uris) {
-            return mEabController.getCapabilitiesIncludingExpired(uris);
-        }
-
-        @Override
         public EabCapabilityResult getAvailabilityFromCache(Uri contactUri) {
             return mEabController.getAvailability(contactUri);
-        }
-
-        @Override
-        public EabCapabilityResult getAvailabilityFromCacheIncludingExpired(Uri contactUri) {
-            return mEabController.getAvailabilityIncludingExpired(contactUri);
         }
 
         @Override
@@ -603,18 +550,6 @@ public class UceController {
                         return;
                     }
                     UceController.this.onUnpublish();
-                }
-
-                @Override
-                public void onPublishUpdated(int reasonCode, String reasonPhrase,
-                        int reasonHeaderCause, String reasonHeaderText) {
-                    if (isRcsConnecting()) {
-                        mCachedCapabilityEvent.setOnPublishUpdatedEvent(reasonCode, reasonPhrase,
-                                reasonHeaderCause, reasonHeaderText);
-                        return;
-                    }
-                    UceController.this.onPublishUpdated(reasonCode, reasonPhrase,
-                            reasonHeaderCause, reasonHeaderText);
                 }
 
                 @Override
@@ -737,17 +672,6 @@ public class UceController {
     }
 
     /**
-     * This method is triggered by the ImsService to notify framework that the device's
-     * publish status has been changed.
-     */
-    public void onPublishUpdated(int reasonCode, String reasonPhrase,
-            int reasonHeaderCause, String reasonHeaderText) {
-        logi("onPublishUpdated");
-        mPublishController.onPublishUpdated(reasonCode, reasonPhrase,
-                reasonHeaderCause, reasonHeaderText);
-    }
-
-    /**
      * Request publish the device's capabilities. This request is from the ImsService to send the
      * capabilities to the remote side.
      */
@@ -760,9 +684,8 @@ public class UceController {
     /**
      * Register a {@link PublishStateCallback} to receive the published state changed.
      */
-    public void registerPublishStateCallback(@NonNull IRcsUcePublishStateCallback c,
-            boolean supportPublishingState) {
-        mPublishController.registerPublishStateCallback(c, supportPublishingState);
+    public void registerPublishStateCallback(@NonNull IRcsUcePublishStateCallback c) {
+        mPublishController.registerPublishStateCallback(c);
     }
 
     /**
@@ -775,8 +698,8 @@ public class UceController {
     /**
      * Get the UCE publish state if the PUBLISH is supported by the carrier.
      */
-    public @PublishState int getUcePublishState(boolean isSupportPublishingState) {
-        return mPublishController.getUcePublishState(isSupportPublishingState);
+    public @PublishState int getUcePublishState() {
+        return mPublishController.getUcePublishState();
     }
 
     /**
@@ -832,7 +755,6 @@ public class UceController {
     public void removeRequestDisallowedStatus() {
         logd("removeRequestDisallowedStatus");
         mDeviceState.resetDeviceState();
-        mRequestManager.resetThrottlingList();
     }
 
     /**

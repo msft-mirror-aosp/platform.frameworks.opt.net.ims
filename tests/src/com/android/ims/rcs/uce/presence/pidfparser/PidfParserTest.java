@@ -93,13 +93,9 @@ public class PidfParserTest extends ImsTestBase {
                 isVideoSupported);
 
         // Convert to the class RcsContactUceCapability
-        RcsContactUceCapabilityWrapper capabilitiesWrapper =
-                PidfParser.getRcsContactUceCapabilityWrapper(pidfData);
-        assertNotNull(capabilitiesWrapper);
-        RcsContactUceCapability capabilities = capabilitiesWrapper.toRcsContactUceCapability();
+        RcsContactUceCapability capabilities = PidfParser.getRcsContactUceCapability(pidfData);
         assertNotNull(capabilities);
         assertEquals(Uri.parse(contact), capabilities.getContactUri());
-        assertEquals(Uri.parse(contact), capabilities.getEntityUri());
         assertEquals(RcsContactUceCapability.SOURCE_TYPE_NETWORK, capabilities.getSourceType());
         assertEquals(RcsContactUceCapability.CAPABILITY_MECHANISM_PRESENCE,
                 capabilities.getCapabilityMechanism());
@@ -171,14 +167,10 @@ public class PidfParserTest extends ImsTestBase {
         String pidfData = getPidfDataWithNewlineAndWhitespaceCharacters();
 
         // Convert to the class RcsContactUceCapability
-        RcsContactUceCapabilityWrapper capabilitiesWrapper =
-                PidfParser.getRcsContactUceCapabilityWrapper(pidfData);
-        assertNotNull(capabilitiesWrapper);
-        RcsContactUceCapability capabilities = capabilitiesWrapper.toRcsContactUceCapability();
+        RcsContactUceCapability capabilities = PidfParser.getRcsContactUceCapability(pidfData);
 
         assertNotNull(capabilities);
         assertEquals(Uri.parse(contact), capabilities.getContactUri());
-        assertEquals(Uri.parse(contact), capabilities.getEntityUri());
         assertEquals(RcsContactUceCapability.SOURCE_TYPE_NETWORK, capabilities.getSourceType());
         assertEquals(RcsContactUceCapability.CAPABILITY_MECHANISM_PRESENCE,
                 capabilities.getCapabilityMechanism());
@@ -241,10 +233,7 @@ public class PidfParserTest extends ImsTestBase {
                 serviceId2, serviceDescription2, isAudioSupported, isVideoSupported);
 
         // Convert to the class RcsContactUceCapability
-        RcsContactUceCapabilityWrapper capabilitiesWrapper =
-                PidfParser.getRcsContactUceCapabilityWrapper(pidfData);
-        assertNotNull(capabilitiesWrapper);
-        RcsContactUceCapability capabilities = capabilitiesWrapper.toRcsContactUceCapability();
+        RcsContactUceCapability capabilities = PidfParser.getRcsContactUceCapability(pidfData);
 
         assertNotNull(capabilities);
         assertEquals(Uri.parse(contact), capabilities.getContactUri());
@@ -286,11 +275,8 @@ public class PidfParserTest extends ImsTestBase {
         final String pidf = PidfParser.convertToPidf(capability);
 
         // Restore to the RcsContactUceCapability from the pidf
-        RcsContactUceCapabilityWrapper capabilitiesWrapper =
-                PidfParser.getRcsContactUceCapabilityWrapper(pidf);
-        assertNotNull(capabilitiesWrapper);
         final RcsContactUceCapability restoredCapability =
-                capabilitiesWrapper.toRcsContactUceCapability();
+                PidfParser.getRcsContactUceCapability(pidf);
 
         assertEquals(capability.getContactUri(), restoredCapability.getContactUri());
         assertEquals(capability.getCapabilityMechanism(),

@@ -21,9 +21,9 @@ import android.net.Uri;
 import android.telephony.ims.RcsContactPresenceTuple;
 import android.telephony.ims.RcsContactPresenceTuple.ServiceCapabilities;
 import android.telephony.ims.RcsContactUceCapability;
+import android.telephony.ims.RcsContactUceCapability.PresenceBuilder;
 import android.text.TextUtils;
 import android.util.Log;
-
 
 import com.android.ims.rcs.uce.presence.pidfparser.capabilities.Audio;
 import com.android.ims.rcs.uce.presence.pidfparser.capabilities.CapsConstant;
@@ -35,7 +35,6 @@ import com.android.ims.rcs.uce.presence.pidfparser.pidf.Basic;
 import com.android.ims.rcs.uce.presence.pidfparser.pidf.PidfConstant;
 import com.android.ims.rcs.uce.presence.pidfparser.pidf.Presence;
 import com.android.ims.rcs.uce.presence.pidfparser.pidf.Tuple;
-import com.android.ims.rcs.uce.presence.pidfparser.RcsContactUceCapabilityWrapper;
 import com.android.ims.rcs.uce.util.UceUtils;
 import com.android.internal.annotations.VisibleForTesting;
 
@@ -121,12 +120,11 @@ public class PidfParser {
     }
 
     /**
-     * Get the RcsContactUceCapabilityWrapper from the given PIDF xml format.
+     * Get the RcsContactUceCapability from the given PIDF xml format.
      */
-    public static @Nullable RcsContactUceCapabilityWrapper getRcsContactUceCapabilityWrapper(
-            String pidf) {
+    public static @Nullable RcsContactUceCapability getRcsContactUceCapability(String pidf) {
         if (TextUtils.isEmpty(pidf)) {
-            Log.w(LOG_TAG, "getRcsContactUceCapabilityWrapper: The given pidf is empty");
+            Log.w(LOG_TAG, "getRcsContactUceCapability: The given pidf is empty");
             return null;
         }
 
@@ -134,7 +132,7 @@ public class PidfParser {
         Matcher matcher = PIDF_PATTERN.matcher(pidf);
         String formattedPidf = matcher.replaceAll("");
         if (TextUtils.isEmpty(formattedPidf)) {
-            Log.w(LOG_TAG, "getRcsContactUceCapabilityWrapper: The formatted pidf is empty");
+            Log.w(LOG_TAG, "getRcsContactUceCapability: The formatted pidf is empty");
             return null;
         }
 
@@ -149,7 +147,7 @@ public class PidfParser {
             // Start parsing
             Presence presence = parsePidf(parser);
 
-            // Convert from the Presence to the RcsContactUceCapabilityWrapper
+            // Convert from the Presence to the RcsContactUceCapability
             return convertToRcsContactUceCapability(presence);
 
         } catch (XmlPullParserException | IOException e) {
@@ -170,12 +168,10 @@ public class PidfParser {
             XmlPullParserException {
         Presence presence = null;
         int nextType = parser.next();
-        boolean findPresenceTag = false;
         do {
             // Find the Presence start tag
             if (nextType == XmlPullParser.START_TAG
                     && Presence.ELEMENT_NAME.equals(parser.getName())) {
-                findPresenceTag = true;
                 presence = new Presence();
                 presence.parse(parser);
                 break;
@@ -183,18 +179,13 @@ public class PidfParser {
             nextType = parser.next();
         } while(nextType != XmlPullParser.END_DOCUMENT);
 
-        if (!findPresenceTag) {
-            Log.w(LOG_TAG, "parsePidf: The presence start tag not found.");
-        }
-
         return presence;
     }
 
     /*
-     * Convert the given Presence to the RcsContactUceCapabilityWrapper
+     * Convert the given Presence to the RcsContactUceCapability
      */
-    private static RcsContactUceCapabilityWrapper convertToRcsContactUceCapability(
-            Presence presence) {
+    private static RcsContactUceCapability convertToRcsContactUceCapability(Presence presence) {
         if (presence == null) {
             Log.w(LOG_TAG, "convertToRcsContactUceCapability: The presence is null");
             return null;
@@ -204,24 +195,19 @@ public class PidfParser {
             return null;
         }
 
-        RcsContactUceCapabilityWrapper uceCapabilityWrapper = new RcsContactUceCapabilityWrapper(
-                Uri.parse(presence.getEntity()), RcsContactUceCapability.SOURCE_TYPE_NETWORK,
+        PresenceBuilder presenceBuilder = new PresenceBuilder(Uri.parse(presence.getEntity()),
+                RcsContactUceCapability.SOURCE_TYPE_NETWORK,
                 RcsContactUceCapability.REQUEST_RESULT_FOUND);
 
         // Add all the capability tuples of this contact
         presence.getTupleList().forEach(tuple -> {
-            // The tuple that fails parsing is invalid data, so discard it.
-            if (!tuple.getMalformed()) {
-                RcsContactPresenceTuple capabilityTuple = getRcsContactPresenceTuple(tuple);
-                if (capabilityTuple != null) {
-                    uceCapabilityWrapper.addCapabilityTuple(capabilityTuple);
-                }
-            } else {
-                uceCapabilityWrapper.setMalformedContents();
+            RcsContactPresenceTuple capabilityTuple = getRcsContactPresenceTuple(tuple);
+            if (capabilityTuple != null) {
+                presenceBuilder.addCapabilityTuple(capabilityTuple);
             }
         });
-        uceCapabilityWrapper.setEntityUri(Uri.parse(presence.getEntity()));
-        return uceCapabilityWrapper;
+
+        return presenceBuilder.build();
     }
 
     /*
