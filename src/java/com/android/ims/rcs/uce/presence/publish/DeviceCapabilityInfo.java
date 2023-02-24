@@ -168,13 +168,17 @@ public class DeviceCapabilityInfo {
 
     /**
      * Update the status that IMS MMTEL is unregistered.
+     * @return Mmtel registered status before change
      */
-    public synchronized void updateImsMmtelUnregistered() {
+    public synchronized boolean updateImsMmtelUnregistered() {
         logi("IMS MMTEL unregistered: original state=" + mMmtelRegistered);
+        boolean changed = false;
         if (mMmtelRegistered) {
             mMmtelRegistered = false;
+            changed = true;
         }
         mMmtelNetworkRegType = AccessNetworkConstants.TRANSPORT_TYPE_INVALID;
+        return changed;
     }
 
     /**
@@ -242,6 +246,9 @@ public class DeviceCapabilityInfo {
             mRcsRegistered = false;
             changed = true;
         }
+
+        mLastRegistrationFeatureTags = Collections.emptySet();
+        updateRegistration(mLastRegistrationFeatureTags);
         mRcsNetworkRegType = AccessNetworkConstants.TRANSPORT_TYPE_INVALID;
         return changed;
     }
