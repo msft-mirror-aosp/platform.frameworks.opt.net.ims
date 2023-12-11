@@ -2170,6 +2170,38 @@ public class ImsManager implements FeatureUpdates {
     }
 
     /**
+     * Adds a callback that gets called when IMS emergency registration has changed for a specific
+     * subscription.
+     *
+     * @param callback A {@link RegistrationManager.RegistrationCallback} that will notify the
+     *                 caller when IMS registration status has changed.
+     * @param subId The subscription ID to register this registration callback for.
+     * @throws RemoteException when the ImsService connection is not available.
+     */
+    public void addEmergencyRegistrationCallbackForSubscription(
+            IImsRegistrationCallback callback, int subId) throws RemoteException {
+        if (callback == null) {
+            throw new IllegalArgumentException("emergency registration callback can't be null");
+        }
+        mMmTelConnectionRef.get().addEmergencyRegistrationCallbackForSubscription(callback, subId);
+        log("Emergency registration Callback registered.");
+        // Only record if there isn't a RemoteException.
+    }
+
+    /**
+     * Removes a previously registered {@link RegistrationManager.RegistrationCallback} callback
+     * that is associated with a specific subscription.
+     */
+    public void removeEmergencyRegistrationCallbackForSubscription(
+            IImsRegistrationCallback callback, int subId) {
+        if (callback == null) {
+            throw new IllegalArgumentException("emergency registration callback can't be null");
+        }
+        mMmTelConnectionRef.get().removeEmergencyRegistrationCallbackForSubscription(callback,
+                subId);
+    }
+
+    /**
      * Adds a callback that gets called when MMTel capability status has changed, for example when
      * Voice over IMS or VT over IMS is not available currently.
      * @param callback A {@link ImsMmTelManager.CapabilityCallback} that will notify the caller when
