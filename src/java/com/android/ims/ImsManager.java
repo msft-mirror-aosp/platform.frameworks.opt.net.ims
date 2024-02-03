@@ -41,6 +41,7 @@ import android.telecom.TelecomManager;
 import android.telephony.AccessNetworkConstants;
 import android.telephony.BinderCacheManager;
 import android.telephony.CarrierConfigManager;
+import android.telephony.ServiceState;
 import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyFrameworkInitializer;
 import android.telephony.TelephonyManager;
@@ -443,6 +444,7 @@ public class ImsManager implements FeatureUpdates {
     private Context mContext;
     private CarrierConfigManager mConfigManager;
     private int mPhoneId;
+    private TelephonyManager mTelephonyManager;
     private AtomicReference<MmTelFeatureConnection> mMmTelConnectionRef = new AtomicReference<>();
     // Used for debug purposes only currently
     private boolean mConfigUpdated = false;
@@ -1013,12 +1015,12 @@ public class ImsManager implements FeatureUpdates {
      * Returns whether the user sets call composer setting per sub.
      */
     public boolean isCallComposerEnabledByUser() {
-        TelephonyManager tm = mContext.getSystemService(TelephonyManager.class);
-        if (tm == null) {
+        if (mTelephonyManager == null) {
             loge("isCallComposerEnabledByUser: TelephonyManager is null, returning false");
             return false;
         }
-        return tm.getCallComposerStatus() == TelephonyManager.CALL_COMPOSER_STATUS_ON;
+        return mTelephonyManager.getCallComposerStatus()
+                == TelephonyManager.CALL_COMPOSER_STATUS_ON;
     }
 
     /**
@@ -1353,6 +1355,10 @@ public class ImsManager implements FeatureUpdates {
             if (getBooleanCarrierConfig(
                     CarrierConfigManager.KEY_USE_WFC_HOME_NETWORK_MODE_IN_ROAMING_NETWORK_BOOL)) {
                 setting = getWfcMode(false);
+            } else if (overrideWfcRoamingModeWhileUsingNTN()) {
+                if (DBG) log("getWfcMode (roaming) "
+                        + "- override Wfc roaming mode to WIFI_PREFERRED");
+                setting = ImsConfig.WfcModeFeatureValueConstants.WIFI_PREFERRED;
             } else if (!getBooleanCarrierConfig(
                     CarrierConfigManager.KEY_EDITABLE_WFC_ROAMING_MODE_BOOL)) {
                 setting = getIntCarrierConfig(
@@ -1422,13 +1428,11 @@ public class ImsManager implements FeatureUpdates {
                     + subId);
         }
 
-        TelephonyManager tm = (TelephonyManager)
-                mContext.getSystemService(Context.TELEPHONY_SERVICE);
-        if (tm == null) {
+        if (mTelephonyManager == null) {
             loge("setWfcMode: TelephonyManager is null, can not set WFC.");
             return;
         }
-        tm = tm.createForSubscriptionId(getSubId());
+        TelephonyManager tm = mTelephonyManager.createForSubscriptionId(getSubId());
         // Unfortunately, the WFC mode is the same for home/roaming (we do not have separate
         // config keys), so we have to change the WFC mode when moving home<->roaming. So, only
         // call setWfcModeInternal when roaming == telephony roaming status. Otherwise, ignore.
@@ -1576,9 +1580,7 @@ public class ImsManager implements FeatureUpdates {
     }
 
     public boolean isSuppServicesOverUtEnabledByPlatform() {
-        TelephonyManager manager = (TelephonyManager) mContext.getSystemService(
-                Context.TELEPHONY_SERVICE);
-        int cardState = manager.getSimState(mPhoneId);
+        int cardState = mTelephonyManager.getSimState(mPhoneId);
         if (cardState != TelephonyManager.SIM_STATE_READY) {
             // Do not report enabled until we actually have an active subscription.
             return false;
@@ -1596,12 +1598,11 @@ public class ImsManager implements FeatureUpdates {
     private boolean isGbaValid() {
         if (getBooleanCarrierConfig(
                 CarrierConfigManager.KEY_CARRIER_IMS_GBA_REQUIRED_BOOL)) {
-            TelephonyManager tm = mContext.getSystemService(TelephonyManager.class);
-            if (tm == null) {
+            if (mTelephonyManager == null) {
                 loge("isGbaValid: TelephonyManager is null, returning false.");
                 return false;
             }
-            tm = tm.createForSubscriptionId(getSubId());
+            TelephonyManager tm = mTelephonyManager.createForSubscriptionId(getSubId());
             String efIst = tm.getIsimIst();
             if (efIst == null) {
                 loge("isGbaValid - ISF is NULL");
@@ -1838,13 +1839,12 @@ public class ImsManager implements FeatureUpdates {
      */
     private void updateVoiceWifiFeatureAndProvisionedValues(CapabilityChangeRequest request,
      boolean isNonTty) {
-        TelephonyManager tm = mContext.getSystemService(TelephonyManager.class);
         boolean isNetworkRoaming =  false;
-        if (tm == null) {
+        if (mTelephonyManager == null) {
             loge("updateVoiceWifiFeatureAndProvisionedValues: TelephonyManager is null, assuming"
                     + " not roaming.");
         } else {
-            tm = tm.createForSubscriptionId(getSubId());
+            TelephonyManager tm = mTelephonyManager.createForSubscriptionId(getSubId());
             isNetworkRoaming = tm.isNetworkRoaming();
         }
 
@@ -1981,6 +1981,7 @@ public class ImsManager implements FeatureUpdates {
     private ImsManager(Context context, int phoneId) {
         mContext = context;
         mPhoneId = phoneId;
+        mTelephonyManager = context.getSystemService(TelephonyManager.class);
         mSubscriptionManagerProxy = new DefaultSubscriptionManagerProxy(context);
         mSettingsProxy = new DefaultSettingsProxy();
         mConfigManager = (CarrierConfigManager) context.getSystemService(
@@ -2002,6 +2003,7 @@ public class ImsManager implements FeatureUpdates {
         mContext = context;
         mPhoneId = phoneId;
         mMmTelFeatureConnectionFactory = factory;
+        mTelephonyManager = context.getSystemService(TelephonyManager.class);
         mSubscriptionManagerProxy = subManagerProxy;
         mSettingsProxy = settingsProxy;
         mConfigManager = (CarrierConfigManager) context.getSystemService(
@@ -3095,9 +3097,7 @@ public class ImsManager implements FeatureUpdates {
      * Used for turning on IMS.if its off already
      */
     private void turnOnIms() throws ImsException {
-        TelephonyManager tm = (TelephonyManager)
-                mContext.getSystemService(Context.TELEPHONY_SERVICE);
-        tm.enableIms(mPhoneId);
+        mTelephonyManager.enableIms(mPhoneId);
     }
 
     private boolean isImsTurnOffAllowed() {
@@ -3111,9 +3111,7 @@ public class ImsManager implements FeatureUpdates {
      * Once turned off, all calls will be over CS.
      */
     private void turnOffIms() throws ImsException {
-        TelephonyManager tm = (TelephonyManager)
-                mContext.getSystemService(Context.TELEPHONY_SERVICE);
-        tm.disableIms(mPhoneId);
+        mTelephonyManager.disableIms(mPhoneId);
     }
 
     /**
@@ -3302,12 +3300,11 @@ public class ImsManager implements FeatureUpdates {
     }
 
     private boolean isDataEnabled() {
-        TelephonyManager tm = mContext.getSystemService(TelephonyManager.class);
-        if (tm == null) {
+        if (mTelephonyManager == null) {
             loge("isDataEnabled: TelephonyManager not available, returning false...");
             return false;
         }
-        tm = tm.createForSubscriptionId(getSubId());
+        TelephonyManager tm = mTelephonyManager.createForSubscriptionId(getSubId());
         return tm.isDataConnectionAllowed();
     }
 
@@ -3603,5 +3600,36 @@ public class ImsManager implements FeatureUpdates {
             throw new ImsException("updateImsCarrierConfigs()", e,
                     ImsReasonInfo.CODE_LOCAL_IMS_SERVICE_DOWN);
         }
+    }
+
+    /**
+     * Determine whether to override roaming Wi-Fi calling preference when device is connected to
+     * non-terrestrial network.
+     *
+     * @return {@code true} if phone is connected to non-terrestrial network and if
+     * {@link CarrierConfigManager#KEY_OVERRIDE_WFC_ROAMING_MODE_WHILE_USING_NTN_BOOL} is true,
+     * {@code false} otherwise.
+     */
+    private boolean overrideWfcRoamingModeWhileUsingNTN() {
+        if (!Flags.carrierEnabledSatelliteFlag()) {
+            return false;
+        }
+
+        if (mTelephonyManager == null) {
+            return false;
+        }
+
+        TelephonyManager tm = mTelephonyManager.createForSubscriptionId(getSubId());
+        ServiceState serviceState = tm.getServiceState();
+        if (serviceState == null) {
+            return false;
+        }
+
+        if (!serviceState.isUsingNonTerrestrialNetwork()) {
+            return false;
+        }
+
+        return getBooleanCarrierConfig(
+                CarrierConfigManager.KEY_OVERRIDE_WFC_ROAMING_MODE_WHILE_USING_NTN_BOOL);
     }
 }
