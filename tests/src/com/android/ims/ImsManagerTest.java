@@ -45,6 +45,8 @@ import android.os.RemoteException;
 import android.platform.test.flag.junit.SetFlagsRule;
 import android.telephony.BinderCacheManager;
 import android.telephony.CarrierConfigManager;
+import android.telephony.NetworkRegistrationInfo;
+import android.telephony.ServiceState;
 import android.telephony.SubscriptionManager;
 import android.telephony.ims.ImsMmTelManager;
 import android.telephony.ims.ProvisioningManager;
@@ -931,6 +933,41 @@ public class ImsManagerTest extends ImsTestBase {
                 anyInt(),
                 eq(SubscriptionManager.WFC_IMS_ROAMING_MODE),
                 anyInt());
+    }
+
+    @Test @SmallTest
+    public void getWfcMode_overrideWfcRoamingModeWhileUsingNTN() {
+        mSetFlagsRule.enableFlags(Flags.FLAG_CARRIER_ENABLED_SATELLITE_FLAG);
+
+        // Phone connected to non-terrestrial network
+        NetworkRegistrationInfo nri = new NetworkRegistrationInfo.Builder()
+                .setIsNonTerrestrialNetwork(true)
+                .build();
+        ServiceState ss = new ServiceState();
+        ss.addNetworkRegistrationInfo(nri);
+        doReturn(ss).when(mTelephonyManager).getServiceState();
+
+        ImsManager imsManager = getImsManagerAndInitProvisionedValues();
+
+        mBundle.putBoolean(
+                CarrierConfigManager.KEY_USE_WFC_HOME_NETWORK_MODE_IN_ROAMING_NETWORK_BOOL, false);
+        mBundle.putBoolean(CarrierConfigManager.KEY_EDITABLE_WFC_ROAMING_MODE_BOOL, false);
+        mBundle.putInt(CarrierConfigManager.KEY_CARRIER_DEFAULT_WFC_IMS_ROAMING_MODE_INT,
+                ImsConfig.WfcModeFeatureValueConstants.CELLULAR_PREFERRED);
+
+        mBundle.putBoolean(
+                CarrierConfigManager.KEY_OVERRIDE_WFC_ROAMING_MODE_WHILE_USING_NTN_BOOL, true);
+        assertEquals(ImsConfig.WfcModeFeatureValueConstants.WIFI_PREFERRED,
+                imsManager.getWfcMode(true));
+        verify(mSubscriptionManagerProxy, never()).getIntegerSubscriptionProperty(anyInt(),
+                eq(SubscriptionManager.WFC_IMS_ROAMING_MODE), anyInt());
+
+        mBundle.putBoolean(
+                CarrierConfigManager.KEY_OVERRIDE_WFC_ROAMING_MODE_WHILE_USING_NTN_BOOL, false);
+        assertEquals(ImsConfig.WfcModeFeatureValueConstants.CELLULAR_PREFERRED,
+                imsManager.getWfcMode(true));
+        verify(mSubscriptionManagerProxy, never()).getIntegerSubscriptionProperty(anyInt(),
+                eq(SubscriptionManager.WFC_IMS_ROAMING_MODE), anyInt());
     }
 
     /**

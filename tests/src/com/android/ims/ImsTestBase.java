@@ -43,7 +43,7 @@ public class ImsTestBase {
         mContextFixture = new ContextFixture();
         mContext = mContextFixture.getContext();
 
-        mTelephonyManager = (TelephonyManager) mContext.getSystemService(Context.TELEPHONY_SERVICE);
+        mTelephonyManager = mContext.getSystemService(TelephonyManager.class);
         mSubscriptionManager = (SubscriptionManager) mContext.getSystemService(
                 Context.TELEPHONY_SUBSCRIPTION_SERVICE);
 
