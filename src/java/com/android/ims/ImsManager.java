@@ -69,7 +69,6 @@ import android.telephony.ims.feature.CapabilityChangeRequest;
 import android.telephony.ims.feature.ImsFeature;
 import android.telephony.ims.feature.MmTelFeature;
 import android.telephony.ims.stub.ImsCallSessionImplBase;
-import android.telephony.ims.stub.ImsConfigImplBase;
 import android.telephony.ims.stub.ImsRegistrationImplBase;
 import android.util.SparseArray;
 
@@ -1024,6 +1023,18 @@ public class ImsManager implements FeatureUpdates {
     }
 
     /**
+     * Returns whether the business only call composer is on.
+     */
+    public boolean isBusinessOnlyCallComposerEnabledByUser() {
+        TelephonyManager tm = mContext.getSystemService(TelephonyManager.class);
+        if (tm == null) {
+            loge("isBusinessOnlyCallComposerEnabledByUser: TelephonyManager is null");
+            return false;
+        }
+        return tm.getCallComposerStatus() == TelephonyManager.CALL_COMPOSER_STATUS_BUSINESS_ONLY;
+    }
+
+    /**
      * Change persistent VT enabled setting
      *
      * @deprecated Does not support MSIM devices. Please use {@link #setVtSetting(boolean)} instead.
@@ -1702,7 +1713,11 @@ public class ImsManager implements FeatureUpdates {
         updateVoiceWifiFeatureAndProvisionedValues(request, isNonTtyWifi);
         updateCrossSimFeatureAndProvisionedValues(request);
         updateVideoCallFeatureValue(request, isNonTty);
-        updateCallComposerFeatureValue(request);
+        if (com.android.server.telecom.flags.Flags.businessCallComposer()) {
+            updateCallComposerFeatureValue(request);
+        } else {
+            updateCallComposerFeatureValueLegacy(request);
+        }
         // Only turn on IMS for RTT if there's an active subscription present. If not, the
         // modem will be in emergency-call-only mode and will use separate signaling to
         // establish an RTT emergency call.
@@ -1741,11 +1756,23 @@ public class ImsManager implements FeatureUpdates {
      * @return {@code true} if IMS needs to be turned on for the capability.
      */
     private boolean isImsNeededForCapability(int capability) {
-        // UT does not require IMS to be enabled.
-        return capability != MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_UT &&
-                // call composer is used as part of calling, so it should not trigger the enablement
-                // of IMS.
-                capability != MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_CALL_COMPOSER;
+        if (com.android.server.telecom.flags.Flags.businessCallComposer()) {
+            // UT does not require IMS to be enabled.
+            return capability != MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_UT &&
+                    // call composer is used as part of calling, so it should not trigger the
+                    // enablement
+                    // of IMS.
+                    capability != MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_CALL_COMPOSER &&
+                    capability != MmTelFeature.MmTelCapabilities
+                            .CAPABILITY_TYPE_CALL_COMPOSER_BUSINESS_ONLY;
+        } else {
+            // UT does not require IMS to be enabled.
+            return capability != MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_UT &&
+                    // call composer is used as part of calling, so it should not trigger the
+                    // enablement
+                    // of IMS.
+                    capability != MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_CALL_COMPOSER;
+        }
     }
 
     /**
@@ -1942,7 +1969,7 @@ public class ImsManager implements FeatureUpdates {
     /**
      * Update call composer capability
      */
-    private void updateCallComposerFeatureValue(CapabilityChangeRequest request) {
+    private void updateCallComposerFeatureValueLegacy(CapabilityChangeRequest request) {
         boolean isUserSetEnabled = isCallComposerEnabledByUser();
         boolean isCarrierConfigEnabled = getBooleanCarrierConfig(
                 CarrierConfigManager.KEY_SUPPORTS_CALL_COMPOSER_BOOL);
@@ -1958,11 +1985,11 @@ public class ImsManager implements FeatureUpdates {
         if (isFeatureOn) {
             request.addCapabilitiesToEnableForTech(
                     MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_CALL_COMPOSER,
-                            ImsRegistrationImplBase.REGISTRATION_TECH_LTE);
+                    ImsRegistrationImplBase.REGISTRATION_TECH_LTE);
         } else {
             request.addCapabilitiesToDisableForTech(
                     MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_CALL_COMPOSER,
-                            ImsRegistrationImplBase.REGISTRATION_TECH_LTE);
+                    ImsRegistrationImplBase.REGISTRATION_TECH_LTE);
         }
         if (isFeatureOn && nrAvailable) {
             request.addCapabilitiesToEnableForTech(
@@ -1971,6 +1998,84 @@ public class ImsManager implements FeatureUpdates {
         } else {
             request.addCapabilitiesToDisableForTech(
                     MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_CALL_COMPOSER,
+                    ImsRegistrationImplBase.REGISTRATION_TECH_NR);
+        }
+    }
+
+    /**
+     * Update call composer capability
+     */
+    private void updateCallComposerFeatureValue(CapabilityChangeRequest request) {
+        // query user set values
+        boolean isCallComposerEnabledByUser = isCallComposerEnabledByUser();
+        boolean isBusinessComposerEnabledByUser = isBusinessOnlyCallComposerEnabledByUser();
+        // query carrier set values
+        boolean isCallComposerEnabledByConfig = getBooleanCarrierConfig(
+                CarrierConfigManager.KEY_SUPPORTS_CALL_COMPOSER_BOOL);
+        boolean isBusinessComposerEnabledByConfig = getBooleanCarrierConfig(
+                CarrierConfigManager.KEY_SUPPORTS_BUSINESS_CALL_COMPOSER_BOOL);
+        // determine feature settings
+        boolean isCallComposerFeatureOn = isCallComposerEnabledByUser
+                && isCallComposerEnabledByConfig;
+        boolean isBusinessOnlyComposerFeatureOn = isBusinessComposerEnabledByUser
+                && isBusinessComposerEnabledByConfig;
+
+        boolean nrAvailable = isImsOverNrEnabledByPlatform();
+
+        logi("updateCallComposerFeatureValue:"
+                + "  isCallComposerEnabledByUser = " + isCallComposerEnabledByUser
+                + ", isCallComposerEnabledByConfig = " + isCallComposerEnabledByConfig
+                + ", isCallComposerFeatureOn = " + isCallComposerFeatureOn
+                + ", isBusinessOnlyComposerFeatureOn = " + isBusinessOnlyComposerFeatureOn
+                + ", isBusinessComposerEnabledByUser = " + isBusinessComposerEnabledByUser
+                + ", isBusinessComposerEnabledByConfig = " + isBusinessComposerEnabledByConfig
+                + ", nrAvailable = " + nrAvailable);
+
+        // enable/disable composers for LTE
+        if (isCallComposerFeatureOn) {
+            request.addCapabilitiesToEnableForTech(
+                    MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_CALL_COMPOSER,
+                    ImsRegistrationImplBase.REGISTRATION_TECH_LTE);
+            request.addCapabilitiesToEnableForTech(
+                    MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_CALL_COMPOSER_BUSINESS_ONLY,
+                    ImsRegistrationImplBase.REGISTRATION_TECH_LTE);
+        } else if (isBusinessOnlyComposerFeatureOn) {
+            request.addCapabilitiesToEnableForTech(
+                    MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_CALL_COMPOSER_BUSINESS_ONLY,
+                    ImsRegistrationImplBase.REGISTRATION_TECH_LTE);
+            request.addCapabilitiesToDisableForTech(
+                    MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_CALL_COMPOSER,
+                    ImsRegistrationImplBase.REGISTRATION_TECH_LTE);
+        } else {
+            request.addCapabilitiesToDisableForTech(
+                    MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_CALL_COMPOSER,
+                    ImsRegistrationImplBase.REGISTRATION_TECH_LTE);
+            request.addCapabilitiesToDisableForTech(
+                    MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_CALL_COMPOSER_BUSINESS_ONLY,
+                    ImsRegistrationImplBase.REGISTRATION_TECH_LTE);
+        }
+
+        // enable/disable composers for NR
+        if (isCallComposerFeatureOn && nrAvailable) {
+            request.addCapabilitiesToEnableForTech(
+                    MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_CALL_COMPOSER,
+                    ImsRegistrationImplBase.REGISTRATION_TECH_NR);
+            request.addCapabilitiesToEnableForTech(
+                    MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_CALL_COMPOSER_BUSINESS_ONLY,
+                    ImsRegistrationImplBase.REGISTRATION_TECH_NR);
+        } else if (isBusinessOnlyComposerFeatureOn && nrAvailable) {
+            request.addCapabilitiesToEnableForTech(
+                    MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_CALL_COMPOSER_BUSINESS_ONLY,
+                    ImsRegistrationImplBase.REGISTRATION_TECH_NR);
+            request.addCapabilitiesToDisableForTech(
+                    MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_CALL_COMPOSER,
+                    ImsRegistrationImplBase.REGISTRATION_TECH_NR);
+        } else {
+            request.addCapabilitiesToDisableForTech(
+                    MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_CALL_COMPOSER,
+                    ImsRegistrationImplBase.REGISTRATION_TECH_NR);
+            request.addCapabilitiesToDisableForTech(
+                    MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_CALL_COMPOSER_BUSINESS_ONLY,
                     ImsRegistrationImplBase.REGISTRATION_TECH_NR);
         }
     }
