@@ -34,6 +34,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 import android.content.Context;
@@ -52,20 +53,23 @@ import com.android.ims.ImsTestBase;
 import com.android.ims.rcs.uce.UceController;
 import com.android.ims.rcs.uce.UceController.UceControllerCallback;
 import com.android.ims.rcs.uce.eab.EabCapabilityResult;
+import com.android.ims.rcs.uce.presence.subscribe.SubscribeController;
 import com.android.ims.rcs.uce.request.UceRequestManager.RequestManagerCallback;
 import com.android.ims.rcs.uce.request.UceRequestManager.UceUtilsProxy;
 import com.android.ims.rcs.uce.util.FeatureTags;
-
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.stream.Collectors;
+import com.android.internal.telephony.flags.FeatureFlags;
 
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.stream.Collectors;
 
 @RunWith(AndroidJUnit4.class)
 public class UceRequestManagerTest extends ImsTestBase {
@@ -76,6 +80,9 @@ public class UceRequestManagerTest extends ImsTestBase {
     @Mock UceRequestRepository mRequestRepository;
     @Mock IRcsUceControllerCallback mCapabilitiesCallback;
     @Mock IOptionsRequestCallback mOptionsReqCallback;
+    @Mock SubscribeController mSubscribeController;
+    @Mock CapabilityRequestResponse mRequestResponse;
+    @Mock FeatureFlags mFeatureFlags;
 
     private int mSubId = 1;
     private long mTaskId = 1L;
@@ -98,32 +105,35 @@ public class UceRequestManagerTest extends ImsTestBase {
     @SmallTest
     public void testSendCapabilityRequest() throws Exception {
         UceRequestManager requestManager = getUceRequestManager();
-        requestManager.setsUceUtilsProxy(getUceUtilsProxy(true, true, false, false, true, 10));
+        requestManager.setsUceUtilsProxy(getUceUtilsProxy(
+                true, true, false, false, true, 10, false, 0));
 
         List<Uri> uriList = new ArrayList<>();
         uriList.add(Uri.fromParts("sip", "test", null));
         requestManager.sendCapabilityRequest(uriList, false, mCapabilitiesCallback);
 
-        verify(mRequestRepository).addRequestCoordinator(any());
+        verify(mRequestRepository).addRequestCoordinatorAndDispatch(any());
     }
 
     @Test
     @SmallTest
     public void testSendAvailabilityRequest() throws Exception {
         UceRequestManager requestManager = getUceRequestManager();
-        requestManager.setsUceUtilsProxy(getUceUtilsProxy(true, true, false, false, true, 10));
+        requestManager.setsUceUtilsProxy(getUceUtilsProxy(
+                true, true, false, false, true, 10, false, 0));
 
         Uri uri = Uri.fromParts("sip", "test", null);
         requestManager.sendAvailabilityRequest(uri, mCapabilitiesCallback);
 
-        verify(mRequestRepository).addRequestCoordinator(any());
+        verify(mRequestRepository).addRequestCoordinatorAndDispatch(any());
     }
 
     @Test
     @SmallTest
     public void testRequestDestroyed() throws Exception {
         UceRequestManager requestManager = getUceRequestManager();
-        requestManager.setsUceUtilsProxy(getUceUtilsProxy(true, true, true, false, true, 10));
+        requestManager.setsUceUtilsProxy(getUceUtilsProxy(
+                true, true, true, false, true, 10, false, 0));
 
         requestManager.onDestroy();
 
@@ -145,7 +155,9 @@ public class UceRequestManagerTest extends ImsTestBase {
     @SmallTest
     public void testCacheHitShortcut() throws Exception {
         UceRequestManager requestManager = getUceRequestManager();
-        requestManager.setsUceUtilsProxy(getUceUtilsProxy(true, true, true, false, true, 10));
+        requestManager.setsUceUtilsProxy(getUceUtilsProxy(
+                true, true, true, false, true, 10, false, 0));
+
         Handler handler = requestManager.getUceRequestHandler();
 
         List<Uri> uriList = new ArrayList<>();
@@ -167,7 +179,7 @@ public class UceRequestManagerTest extends ImsTestBase {
                 Collectors.toList()));
         verify(mCapabilitiesCallback).onComplete(eq(null));
         // The cache should have been hit, so no network requests should have been generated.
-        verify(mRequestRepository, never()).addRequestCoordinator(any());
+        verify(mRequestRepository, never()).addRequestCoordinatorAndDispatch(any());
     }
 
     /**
@@ -178,7 +190,9 @@ public class UceRequestManagerTest extends ImsTestBase {
     @SmallTest
     public void testCacheExpiredShortcut() throws Exception {
         UceRequestManager requestManager = getUceRequestManager();
-        requestManager.setsUceUtilsProxy(getUceUtilsProxy(true, true, true, false, true, 10));
+        requestManager.setsUceUtilsProxy(getUceUtilsProxy(
+                true, true, true, false, true, 10, false, 0));
+
         Handler handler = requestManager.getUceRequestHandler();
 
         List<Uri> uriList = new ArrayList<>();
@@ -199,7 +213,7 @@ public class UceRequestManagerTest extends ImsTestBase {
         verify(mCapabilitiesCallback, never()).onCapabilitiesReceived(any());
         verify(mCapabilitiesCallback, never()).onComplete(any());
         // A network request should have been generated for the expired contact.
-        verify(mRequestRepository).addRequestCoordinator(any());
+        verify(mRequestRepository).addRequestCoordinatorAndDispatch(any());
     }
 
     /**
@@ -212,7 +226,9 @@ public class UceRequestManagerTest extends ImsTestBase {
     @SmallTest
     public void testCacheHitShortcutForSubsetOfCaps() throws Exception {
         UceRequestManager requestManager = getUceRequestManager();
-        requestManager.setsUceUtilsProxy(getUceUtilsProxy(true, true, true, false, true, 10));
+        requestManager.setsUceUtilsProxy(getUceUtilsProxy(
+                true, true, true, false, true, 10, false, 0));
+
         Handler handler = requestManager.getUceRequestHandler();
 
         List<Uri> uriList = new ArrayList<>();
@@ -244,14 +260,16 @@ public class UceRequestManagerTest extends ImsTestBase {
         verify(mCapabilitiesCallback, never()).onComplete(any());
         // The cache should have been hit, but there was also entry that was not in the cache, so
         // ensure that is requested.
-        verify(mRequestRepository).addRequestCoordinator(any());
+        verify(mRequestRepository).addRequestCoordinatorAndDispatch(any());
     }
 
     @Test
     @SmallTest
     public void testRequestManagerCallback() throws Exception {
         UceRequestManager requestManager = getUceRequestManager();
-        requestManager.setsUceUtilsProxy(getUceUtilsProxy(true, true, true, false, true, 10));
+        requestManager.setsUceUtilsProxy(getUceUtilsProxy(
+                true, true, true, false, true, 10, false, 0));
+
         RequestManagerCallback requestMgrCallback = requestManager.getRequestManagerCallback();
         Handler handler = requestManager.getUceRequestHandler();
 
@@ -331,7 +349,8 @@ public class UceRequestManagerTest extends ImsTestBase {
     @SmallTest
     public void testRetrieveCapForRemote() throws Exception {
         UceRequestManager requestManager = getUceRequestManager();
-        requestManager.setsUceUtilsProxy(getUceUtilsProxy(true, true, true, false, true, 10));
+        requestManager.setsUceUtilsProxy(getUceUtilsProxy(
+                true, true, true, false, true, 10, false, 0));
 
         Uri contact = Uri.fromParts("sip", "test", null);
         List<String> remoteCapList = new ArrayList<>();
@@ -339,17 +358,39 @@ public class UceRequestManagerTest extends ImsTestBase {
         remoteCapList.add(FeatureTags.FEATURE_TAG_FILE_TRANSFER);
         requestManager.retrieveCapabilitiesForRemote(contact, remoteCapList, mOptionsReqCallback);
 
+        verify(mRequestRepository).addRequestCoordinatorAndDispatch(any());
+    }
+
+    @Test
+    @SmallTest
+    public void testSendSubscribeRetryRequest() throws Exception {
+        doReturn(true).when(mFeatureFlags).enableSipSubscribeRetry();
+
+        UceRequestManager requestManager = getUceRequestManager();
+        requestManager.setsUceUtilsProxy(getUceUtilsProxy(
+                true, true, false, false, true, 10, true, 30000));
+
+        RequestManagerCallback requestManagerCallback = requestManager.getRequestManagerCallback();
+
+        SubscribeRequest subscribeRetryRequest = new SubscribeRequest(mSubId,
+                UceRequest.REQUEST_TYPE_CAPABILITY, requestManagerCallback, mSubscribeController,
+                mRequestResponse, mFeatureFlags);
+
+        requestManagerCallback.sendSubscribeRetryRequest(subscribeRetryRequest);
+
         verify(mRequestRepository).addRequestCoordinator(any());
+        verify(mRequestRepository, never()).addRequestCoordinatorAndDispatch(any());
     }
 
     private UceRequestManager getUceRequestManager() {
         UceRequestManager manager = new UceRequestManager(mContext, mSubId, Looper.getMainLooper(),
-                mCallback, mRequestRepository);
+                mCallback, mRequestRepository, mFeatureFlags);
         return manager;
     }
 
     private UceUtilsProxy getUceUtilsProxy(boolean presenceCapEnabled, boolean supportPresence,
-            boolean supportOptions, boolean isBlocked, boolean groupSubscribe, int rclMaximum) {
+            boolean supportOptions, boolean isBlocked, boolean groupSubscribe, int rclMaximum,
+            boolean isRetryEnabled, long retryTime) {
         return new UceUtilsProxy() {
             @Override
             public boolean isPresenceCapExchangeEnabled(Context context, int subId) {
@@ -379,6 +420,11 @@ public class UceRequestManagerTest extends ImsTestBase {
             @Override
             public boolean isNumberBlocked(Context context, String phoneNumber) {
                 return isBlocked;
+            }
+
+            @Override
+            public long getSubscribeRetryDuration(Context context, int subId) {
+                return retryTime;
             }
         };
     }

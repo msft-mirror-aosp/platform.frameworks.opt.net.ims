@@ -42,6 +42,7 @@ import com.android.ims.rcs.uce.presence.publish.PublishController;
 import com.android.ims.rcs.uce.presence.subscribe.SubscribeController;
 import com.android.ims.rcs.uce.request.UceRequestManager;
 import com.android.ims.rcs.uce.UceDeviceState.DeviceStateResult;
+import com.android.internal.telephony.flags.FeatureFlags;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -71,6 +72,7 @@ public class UceControllerTest extends ImsTestBase {
     @Mock UceController.UceControllerCallback mCallback;
     @Mock IRcsUceControllerCallback mCapabilitiesCallback;
     @Mock IOptionsRequestCallback mOptionsRequestCallback;
+    @Mock FeatureFlags mFeatureFlags;
 
     private int mSubId = 1;
 
@@ -86,7 +88,7 @@ public class UceControllerTest extends ImsTestBase {
         doReturn(mOptionsController).when(mControllerFactory).createOptionsController(any(),
                 eq(mSubId));
         doReturn(mTaskManager).when(mTaskManagerFactory).createRequestManager(any(), eq(mSubId),
-                any(), any());
+                any(), any(), any());
         doReturn(mDeviceStateResult).when(mDeviceState).getCurrentState();
     }
 
@@ -280,7 +282,7 @@ public class UceControllerTest extends ImsTestBase {
 
     private UceController createUceController() {
         UceController uceController = new UceController(mContext, mSubId, mDeviceState,
-                mControllerFactory, mTaskManagerFactory);
+                mControllerFactory, mTaskManagerFactory, mFeatureFlags);
         uceController.setUceControllerCallback(mCallback);
         return uceController;
     }
