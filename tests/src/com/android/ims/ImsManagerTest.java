@@ -140,8 +140,6 @@ public class ImsManagerTest extends ImsTestBase {
         InstrumentationRegistry.getInstrumentation().getUiAutomation()
                 .adoptShellPermissionIdentity(
                         "android.permission.READ_PRIVILEGED_PHONE_STATE");
-
-        mSetFlagsRule.initAllFlagsToReleaseConfigDefault();
     }
 
     @After
