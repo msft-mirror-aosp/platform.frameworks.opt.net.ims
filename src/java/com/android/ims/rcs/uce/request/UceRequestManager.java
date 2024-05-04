@@ -510,6 +510,16 @@ public class UceRequestManager {
     }
 
     /**
+     * Notify carrier config changed and update cached value.
+     */
+    public void onCarrierConfigChanged() {
+        mRetryDuration = sUceUtilsProxy.getSubscribeRetryDuration(mContext, mSubId);
+        mRetryEnabled = mRetryDuration >= 0L;
+
+        logd("carrier config changed : retry duration = " + mRetryDuration);
+    }
+
+    /**
      * Send a new capability request. It is called by UceController.
      */
     public void sendCapabilityRequest(List<Uri> uriList, boolean skipFromCache,
