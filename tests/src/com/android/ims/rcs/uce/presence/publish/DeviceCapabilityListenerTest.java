@@ -84,7 +84,6 @@ public class DeviceCapabilityListenerTest extends ImsTestBase {
                 getProvisioningManager(anyInt());
 
         doReturn(true).when(mDeviceCapability).updateTtyPreferredMode(anyInt());
-        doReturn(true).when(mDeviceCapability).updateAirplaneMode(anyBoolean());
         doReturn(true).when(mDeviceCapability).updateMobileData(anyBoolean());
         doReturn(true).when(mDeviceCapability).updateVtSetting(anyBoolean());
         doReturn(true).when(mDeviceCapability).updateVtSetting(anyBoolean());
@@ -108,7 +107,7 @@ public class DeviceCapabilityListenerTest extends ImsTestBase {
         deviceCapListener.initialize();
 
         verify(mContext).registerReceiver(any(), any(),
-            eq(android.Manifest.permission.MODIFY_PHONE_STATE), any());
+            eq(android.Manifest.permission.MODIFY_PHONE_STATE), any(), anyInt());
         verify(mProvisioningManager).registerProvisioningChangedCallback(any(), any());
     }
 
@@ -144,23 +143,6 @@ public class DeviceCapabilityListenerTest extends ImsTestBase {
 
     @Test
     @SmallTest
-    public void testAirplaneModeChange() throws Exception {
-        DeviceCapabilityListener deviceCapListener = createDeviceCapabilityListener();
-        final BroadcastReceiver receiver = deviceCapListener.mReceiver;
-
-        Intent intent = new Intent(Intent.ACTION_AIRPLANE_MODE_CHANGED);
-        receiver.onReceive(mContext, intent);
-
-        Handler handler = deviceCapListener.getHandler();
-        waitForHandlerActionDelayed(handler, HANDLER_WAIT_TIMEOUT_MS, HANDLER_SENT_DELAY_MS);
-
-        verify(mDeviceCapability).updateAirplaneMode(anyBoolean());
-        verify(mCallback).requestPublishFromInternal(
-                PublishController.PUBLISH_TRIGGER_AIRPLANE_MODE_CHANGE);
-    }
-
-    @Test
-    @SmallTest
     public void testMmtelRegistration() throws Exception {
         DeviceCapabilityListener deviceCapListener = createDeviceCapabilityListener();
         deviceCapListener.setImsCallbackRegistered(true);
@@ -172,7 +154,8 @@ public class DeviceCapabilityListenerTest extends ImsTestBase {
         waitForHandlerActionDelayed(handler, HANDLER_WAIT_TIMEOUT_MS, HANDLER_SENT_DELAY_MS);
 
         verify(mDeviceCapability).updateImsMmtelRegistered(1);
-        verify(mCallback).requestPublishFromInternal(
+        // update capability, but not trigger PUBLISH message when MmTel registered.
+        verify(mCallback, never()).requestPublishFromInternal(
                 PublishController.PUBLISH_TRIGGER_MMTEL_REGISTERED);
     }
 

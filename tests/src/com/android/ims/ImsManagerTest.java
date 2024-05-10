@@ -23,11 +23,15 @@ import static android.telephony.ims.stub.ImsRegistrationImplBase.REGISTRATION_TE
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.fail;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -38,11 +42,11 @@ import android.content.res.Resources;
 import android.os.IBinder;
 import android.os.PersistableBundle;
 import android.os.RemoteException;
+import android.platform.test.flag.junit.SetFlagsRule;
 import android.telephony.BinderCacheManager;
 import android.telephony.CarrierConfigManager;
 import android.telephony.SubscriptionManager;
 import android.telephony.ims.ImsMmTelManager;
-import android.telephony.ims.ImsRcsManager;
 import android.telephony.ims.ProvisioningManager;
 import android.telephony.ims.aidl.IImsConfig;
 import android.telephony.ims.aidl.IImsRegistration;
@@ -56,20 +60,25 @@ import androidx.test.InstrumentationRegistry;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
 
+import com.android.ims.internal.IImsCallSession;
 import com.android.internal.os.SomeArgs;
 import com.android.internal.telephony.ITelephony;
+import com.android.internal.telephony.flags.Flags;
 
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
 
 import java.util.Hashtable;
-import java.util.concurrent.Executor;
 
 @RunWith(AndroidJUnit4.class)
 public class ImsManagerTest extends ImsTestBase {
+    @Rule
+    public final SetFlagsRule mSetFlagsRule = new SetFlagsRule();
+
     private static final boolean ENHANCED_4G_MODE_DEFAULT_VAL = true;
     private static final boolean ENHANCED_4G_MODE_EDITABLE = true;
     private static final boolean WFC_IMS_ENABLE_DEFAULT_VAL = false;
@@ -119,7 +128,7 @@ public class ImsManagerTest extends ImsTestBase {
 
         doReturn(true).when(mSubscriptionManagerProxy).isValidSubscriptionId(anyInt());
         doReturn(mSubId).when(mSubscriptionManagerProxy).getActiveSubscriptionIdList();
-        doReturn(mSubId).when(mSubscriptionManagerProxy).getSubscriptionIds(anyInt());
+        doReturn(mSubId[0]).when(mSubscriptionManagerProxy).getSubscriptionId(anyInt());
         doReturn(mPhoneId).when(mSubscriptionManagerProxy).getDefaultVoicePhoneId();
         doReturn(-1).when(mSubscriptionManagerProxy).getIntegerSubscriptionProperty(anyInt(),
                 anyString(), anyInt());
@@ -1010,6 +1019,33 @@ public class ImsManagerTest extends ImsTestBase {
                 eq(ProvisioningManager.KEY_VOICE_OVER_WIFI_ROAMING_ENABLED_OVERRIDE),
                 eq(ProvisioningManager.PROVISIONING_VALUE_DISABLED));
 
+    }
+
+    @Test @SmallTest
+    public void onMemoryAvailableTest() throws Exception{
+        ImsManager imsManager = getImsManagerAndInitProvisionedValues();
+        int token = 1;
+        imsManager.onMemoryAvailable(token);
+        verify(mMmTelFeatureConnection).onMemoryAvailable(eq(token));
+    }
+
+    @Test @SmallTest
+    public void testTakeCall_incomingSessionTerminatedBeforeRegisterListener()
+            throws RemoteException {
+        mSetFlagsRule.enableFlags(
+                Flags.FLAG_IGNORE_ALREADY_TERMINATED_INCOMING_CALL_BEFORE_REGISTERING_LISTENER);
+
+        IImsCallSession mockSession = mock(IImsCallSession.class);
+        doThrow(RemoteException.class).when(mockSession).setListener(any());
+        ImsCall.Listener mockListener = mock(ImsCall.Listener.class);
+
+        ImsManager imsManager = getImsManagerAndInitProvisionedValues();
+        try {
+            imsManager.takeCall(mockSession, mockListener);
+            fail("expect ImsException");
+        } catch (ImsException e) {
+            // expected result
+        }
     }
 
     private ImsManager getImsManagerAndInitProvisionedValues() {
