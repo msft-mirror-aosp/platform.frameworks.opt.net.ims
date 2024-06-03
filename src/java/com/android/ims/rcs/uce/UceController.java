@@ -480,6 +480,7 @@ public class UceController {
         mPublishController.onCarrierConfigChanged();
         mSubscribeController.onCarrierConfigChanged();
         mOptionsController.onCarrierConfigChanged();
+        mRequestManager.onCarrierConfigChanged();
     }
 
     private void handleCachedCapabilityEvent() {
